@@ -14,6 +14,7 @@ import {
   type RpcError,
   type RpcRequest,
 } from '@udmcp/contracts';
+import { FilesystemError, FilesystemService } from '@udmcp/filesystem';
 import { OperationJournal } from '@udmcp/operations';
 import { openSqliteDatabase, type SqliteDatabase } from '@udmcp/storage';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '@udmcp/workspace';
@@ -67,6 +68,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       worktreeRoot:
         options.worktreeRoot ?? join(dirname(resolve(options.databasePath)), 'worktrees'),
     });
+    const filesystem = new FilesystemService({
+      resolveWorkspace: (workspaceId) => workspaces.get(workspaceId),
+    });
     const storageIntegrity = database.integrityCheck();
     if (storageIntegrity !== 'ok') {
       throw new Error(`SQLite integrity check failed: ${storageIntegrity}`);
@@ -77,7 +81,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       void handleHttpRequest(
         request,
         response,
-        createDispatchContext(database, journal, workspaces, instanceId, () => ready),
+        createDispatchContext(database, journal, workspaces, filesystem, instanceId, () => ready),
       );
     });
     server.maxHeadersCount = 32;
@@ -201,6 +205,7 @@ interface DispatchContext {
   database: SqliteDatabase;
   journal: OperationJournal;
   workspaces: WorkspaceRegistry;
+  filesystem: FilesystemService;
   instanceId: string;
   isReady: () => boolean;
 }
@@ -209,10 +214,11 @@ function createDispatchContext(
   database: SqliteDatabase,
   journal: OperationJournal,
   workspaces: WorkspaceRegistry,
+  filesystem: FilesystemService,
   instanceId: string,
   isReady: () => boolean,
 ): DispatchContext {
-  return { database, journal, workspaces, instanceId, isReady };
+  return { database, journal, workspaces, filesystem, instanceId, isReady };
 }
 
 async function handleHttpRequest(
@@ -353,6 +359,14 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
       }
       return parseResultEnvelope({ ok: true, result: workspace }).result as JsonValue;
     }
+    case 'file.read':
+      return dispatchFilesystem(() => context.filesystem.read(readFileReadParams(request.params)));
+    case 'file.list':
+      return dispatchFilesystem(() => context.filesystem.list(readFileListParams(request.params)));
+    case 'file.search':
+      return dispatchFilesystem(() =>
+        context.filesystem.search(readFileSearchParams(request.params)),
+      );
     default:
       throw new DispatchError({
         code: 'METHOD_NOT_FOUND',
@@ -360,6 +374,117 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
         retryable: false,
       });
   }
+}
+
+async function dispatchFilesystem(operation: () => Promise<unknown>): Promise<JsonValue> {
+  try {
+    return (await operation()) as JsonValue;
+  } catch (error) {
+    if (error instanceof FilesystemError) {
+      throw new DispatchError({
+        code: error.code,
+        message: error.message,
+        retryable: error.code === 'PATH_INACCESSIBLE',
+        ...(error.path === null ? {} : { details: { path: error.path } }),
+      });
+    }
+    throw error;
+  }
+}
+
+function readFileReadParams(params: unknown) {
+  const value = readParamsObject(params, 'file.read');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'file.read');
+  const path = readRequiredString(value.path, 'file.read params.path');
+  return {
+    workspaceId,
+    path,
+    ...optionalNumber(value, 'offset'),
+    ...optionalNumber(value, 'maxBytes'),
+  };
+}
+
+function readFileListParams(params: unknown) {
+  const value = readParamsObject(params, 'file.list');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'file.list');
+  return {
+    workspaceId,
+    ...optionalString(value, 'path'),
+    ...optionalNumber(value, 'limit'),
+    ...optionalString(value, 'cursor'),
+  };
+}
+
+function readFileSearchParams(params: unknown) {
+  const value = readParamsObject(params, 'file.search');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'file.search');
+  return {
+    workspaceId,
+    ...optionalString(value, 'path'),
+    ...optionalString(value, 'glob'),
+    ...optionalString(value, 'query'),
+    ...optionalNumber(value, 'maxResults'),
+    ...optionalNumber(value, 'maxBytes'),
+    ...optionalNumber(value, 'maxDepth'),
+    ...optionalNumber(value, 'maxFileBytes'),
+  };
+}
+
+function readParamsObject(params: unknown, method: string): Record<string, unknown> {
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: `${method} requires object params`,
+      retryable: false,
+    });
+  }
+  return params as Record<string, unknown>;
+}
+
+function readWorkspaceIdValue(value: unknown, method: string) {
+  if (typeof value !== 'string') {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: `${method} requires params.workspaceId`,
+      retryable: false,
+    });
+  }
+  return parseEntityId('workspace', value);
+}
+
+function readRequiredString(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: `${label} must be a string`,
+      retryable: false,
+    });
+  }
+  return value;
+}
+
+function optionalString(value: Record<string, unknown>, key: string): Record<string, string> {
+  if (!(key in value) || value[key] === undefined) return {};
+  if (typeof value[key] !== 'string') {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: `${key} must be a string`,
+      retryable: false,
+    });
+  }
+  return { [key]: value[key] } as Record<string, string>;
+}
+
+function optionalNumber(value: Record<string, unknown>, key: string): Record<string, number> {
+  if (!(key in value) || value[key] === undefined) return {};
+  if (typeof value[key] !== 'number') {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: `${key} must be a number`,
+      retryable: false,
+    });
+  }
+  return { [key]: value[key] } as Record<string, number>;
 }
 
 function readWorkspaceOpenParams(params: unknown): {

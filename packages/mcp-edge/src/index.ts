@@ -10,7 +10,7 @@ import {
   toNodeHandler,
 } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
-import { parseWorkspaceRecord } from '@udmcp/contracts';
+import { type JsonValue, parseWorkspaceRecord } from '@udmcp/contracts';
 import { createLocalRpcClient, RpcCallError } from '@udmcp/local-rpc';
 import * as z from 'zod/v4';
 
@@ -81,6 +81,70 @@ const workspaceToolOutputSchema = z.discriminatedUnion('ok', [
     message: z.string().min(1),
     retryable: z.boolean(),
   }),
+]);
+
+const fileReadResultSchema = z.object({
+  path: z.string().min(1),
+  classification: z.enum(['text', 'binary']),
+  size: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  bytesRead: z.number().int().nonnegative(),
+  eof: z.boolean(),
+  truncated: z.boolean(),
+  content: z.string().nullable(),
+});
+
+const fileListResultSchema = z.object({
+  path: z.string().min(1),
+  entries: z.array(
+    z.object({
+      name: z.string(),
+      path: z.string().min(1),
+      type: z.enum(['file', 'directory', 'symlink', 'other']),
+      size: z.number().int().nonnegative().nullable(),
+    }),
+  ),
+  nextCursor: z.string().min(1).nullable(),
+});
+
+const fileSearchResultSchema = z.object({
+  path: z.string().min(1),
+  glob: z.string().min(1),
+  query: z.string().min(1).nullable(),
+  matches: z.array(
+    z.object({
+      path: z.string().min(1),
+      line: z.number().int().min(1).nullable(),
+      column: z.number().int().min(1).nullable(),
+      preview: z.string().nullable(),
+    }),
+  ),
+  truncated: z.boolean(),
+  scannedFiles: z.number().int().nonnegative(),
+  skippedBinary: z.number().int().nonnegative(),
+  skippedOversized: z.number().int().nonnegative(),
+});
+
+const filesystemErrorOutputSchema = z.object({
+  ok: z.literal(false),
+  errorCode: z.string().min(1),
+  message: z.string().min(1),
+  retryable: z.boolean(),
+});
+
+const fileReadToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), file: fileReadResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const fileListToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), listing: fileListResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const fileSearchToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), search: fileSearchResultSchema }),
+  filesystemErrorOutputSchema,
 ]);
 
 export interface StartMcpEdgeOptions {
@@ -247,6 +311,100 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   server.registerTool(
+    'file_read',
+    {
+      title: 'Read File',
+      description:
+        'Read a bounded byte range from a workspace-relative regular file with text/binary classification.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        path: z.string().min(1),
+        offset: z.number().int().nonnegative().optional(),
+        maxBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(1024 * 1024)
+          .optional(),
+      }),
+      outputSchema: fileReadToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async (params) =>
+      callFilesystemRpc(
+        daemonClient,
+        'file.read',
+        definedParams(params),
+        fileReadResultSchema,
+        'file',
+      ),
+  );
+
+  server.registerTool(
+    'file_list',
+    {
+      title: 'List Files',
+      description:
+        'List workspace-relative directory entries in deterministic order with bounded cursor pagination.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        path: z.string().optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+        cursor: z.string().min(1).optional(),
+      }),
+      outputSchema: fileListToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async (params) =>
+      callFilesystemRpc(
+        daemonClient,
+        'file.list',
+        definedParams(params),
+        fileListResultSchema,
+        'listing',
+      ),
+  );
+
+  server.registerTool(
+    'file_search',
+    {
+      title: 'Search Files',
+      description:
+        'Search workspace-relative files with bounded glob and literal-text matching without following symlink directories.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        path: z.string().optional(),
+        glob: z.string().min(1).max(1024).optional(),
+        query: z.string().min(1).max(4096).optional(),
+        maxResults: z.number().int().min(1).max(1000).optional(),
+        maxBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(1024 * 1024)
+          .optional(),
+        maxDepth: z.number().int().min(0).max(100).optional(),
+        maxFileBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(8 * 1024 * 1024)
+          .optional(),
+      }),
+      outputSchema: fileSearchToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async (params) =>
+      callFilesystemRpc(
+        daemonClient,
+        'file.search',
+        definedParams(params),
+        fileSearchResultSchema,
+        'search',
+      ),
+  );
+
+  server.registerTool(
     'workspace_get',
     {
       title: 'Get Workspace',
@@ -281,6 +439,62 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   return server;
+}
+
+async function callFilesystemRpc(
+  daemonClient: ReturnType<typeof createLocalRpcClient>,
+  method: 'file.read' | 'file.list' | 'file.search',
+  params: Record<string, JsonValue>,
+  schema: z.ZodType,
+  resultKey: 'file' | 'listing' | 'search',
+) {
+  try {
+    const raw = await daemonClient.call({
+      requestId: `edge_filesystem_${randomUUID()}`,
+      method,
+      params,
+      deadlineUnixMs: Date.now() + 5_000,
+    });
+    const result = schema.parse(raw);
+    return toolSuccess({ ok: true as const, [resultKey]: result });
+  } catch (error) {
+    const output =
+      error instanceof RpcCallError
+        ? {
+            ok: false as const,
+            errorCode: error.code,
+            message: error.message,
+            retryable: error.retryable,
+          }
+        : {
+            ok: false as const,
+            errorCode: 'CORE_FAILURE',
+            message: error instanceof Error ? error.message : 'Filesystem RPC failed',
+            retryable: false,
+          };
+    return {
+      ...toolSuccess(output),
+      isError: true,
+    };
+  }
+}
+
+function definedParams(value: Record<string, unknown>): Record<string, JsonValue> {
+  const result: Record<string, JsonValue> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === undefined) continue;
+    if (
+      item === null ||
+      typeof item === 'string' ||
+      typeof item === 'number' ||
+      typeof item === 'boolean'
+    ) {
+      result[key] = item;
+      continue;
+    }
+    throw new TypeError(`MCP tool parameter ${key} is not a JSON primitive`);
+  }
+  return result;
 }
 
 async function callWorkspaceRpc(

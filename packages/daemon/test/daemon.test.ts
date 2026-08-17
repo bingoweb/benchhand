@@ -392,6 +392,106 @@ test('workspace RPC preserves structured path and missing-handle errors', async 
   }
 });
 
+test('filesystem RPC reads lists and searches only through an available durable workspace', async () => {
+  const dir = testTempDir('udmcp-daemon-filesystem-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'filesystem');
+  const project = join(dir, 'project');
+  mkdirSync(join(project, 'src'), { recursive: true });
+  writeFileSync(join(project, 'src', 'b.ts'), 'beta needle\n');
+  writeFileSync(join(project, 'src', 'a.ts'), 'alpha needle\nsecond\n');
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_filesystem_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+
+      const read = await client.call({
+        requestId: 'req_file_read',
+        method: 'file.read',
+        params: {
+          workspaceId: workspace.workspaceId,
+          path: 'src/a.ts',
+          offset: 0,
+          maxBytes: 5,
+        },
+      });
+      assert.deepEqual(read, {
+        path: 'src/a.ts',
+        classification: 'text',
+        size: 20,
+        offset: 0,
+        bytesRead: 5,
+        eof: false,
+        truncated: true,
+        content: 'alpha',
+      });
+
+      const list = await client.call({
+        requestId: 'req_file_list',
+        method: 'file.list',
+        params: { workspaceId: workspace.workspaceId, path: 'src', limit: 10 },
+      });
+      assert.deepEqual(
+        typeof list === 'object' &&
+          list !== null &&
+          'entries' in list &&
+          Array.isArray(list.entries)
+          ? list.entries.map((entry) =>
+              typeof entry === 'object' && entry !== null && 'name' in entry ? entry.name : null,
+            )
+          : [],
+        ['a.ts', 'b.ts'],
+      );
+
+      const search = await client.call({
+        requestId: 'req_file_search',
+        method: 'file.search',
+        params: {
+          workspaceId: workspace.workspaceId,
+          path: '.',
+          glob: 'src/**/*.ts',
+          query: 'needle',
+          maxResults: 10,
+        },
+      });
+      assert.deepEqual(
+        typeof search === 'object' &&
+          search !== null &&
+          'matches' in search &&
+          Array.isArray(search.matches)
+          ? search.matches.map((match) =>
+              typeof match === 'object' && match !== null && 'path' in match ? match.path : null,
+            )
+          : [],
+        ['src/a.ts', 'src/b.ts'],
+      );
+
+      await assert.rejects(
+        () =>
+          client.call({
+            requestId: 'req_file_escape',
+            method: 'file.read',
+            params: { workspaceId: workspace.workspaceId, path: '../outside.txt' },
+          }),
+        (error: unknown) =>
+          error instanceof RpcCallError && error.code === 'PATH_OUTSIDE_WORKSPACE',
+      );
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('recovers a stale Unix socket left by a SIGKILLed daemon without losing durable state', {
   skip: process.platform === 'win32',
 }, async () => {

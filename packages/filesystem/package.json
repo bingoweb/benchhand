@@ -1,5 +1,5 @@
 {
-  "name": "@udmcp/daemon",
+  "name": "@udmcp/filesystem",
   "version": "0.0.0-dev",
   "private": true,
   "type": "module",
@@ -12,10 +12,6 @@
   },
   "dependencies": {
     "@udmcp/contracts": "0.0.0-dev",
-    "@udmcp/filesystem": "0.0.0-dev",
-    "@udmcp/local-rpc": "0.0.0-dev",
-    "@udmcp/operations": "0.0.0-dev",
-    "@udmcp/storage": "0.0.0-dev",
-    "@udmcp/workspace": "0.0.0-dev"
+    "minimatch": "10.2.6"
   }
 }

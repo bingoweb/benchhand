@@ -80,7 +80,16 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
     const listed = await client.listTools();
     assert.deepEqual(
       listed.tools.map((tool) => tool.name),
-      ['capabilities', 'health', 'system_info', 'workspace_get', 'workspace_open'],
+      [
+        'capabilities',
+        'health',
+        'system_info',
+        'file_read',
+        'file_list',
+        'file_search',
+        'workspace_get',
+        'workspace_open',
+      ],
     );
 
     const health = await client.callTool({ name: 'health', arguments: {} });
@@ -211,6 +220,109 @@ test('workspace_open exposes worktree mode and baseRef through the MCP edge', as
     assert.equal(workspace.worktreePath, workspace.canonicalPath);
     assert.match(workspace.baseRef ?? '', /^[0-9a-f]{40,64}$/);
     assert.match(workspace.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
+  }
+});
+
+test('file tools expose bounded read list and search through a durable workspace handle', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'file-project');
+  mkdirSync(join(project, 'notes'), { recursive: true });
+  writeFileSync(join(project, 'notes', 'b.txt'), 'beta needle\n');
+  writeFileSync(join(project, 'notes', 'a.txt'), 'alpha needle\nsecond\n');
+
+  try {
+    const listed = await client.listTools();
+    for (const name of ['file_read', 'file_list', 'file_search']) {
+      assert.equal(
+        listed.tools.some((tool) => tool.name === name),
+        true,
+        `missing ${name}`,
+      );
+    }
+
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+
+    const read = await client.callTool({
+      name: 'file_read',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: 'notes/a.txt',
+        offset: 0,
+        maxBytes: 5,
+      },
+    });
+    assert.equal(read.isError, undefined);
+    assert.equal(
+      typeof read.structuredContent === 'object' &&
+        read.structuredContent !== null &&
+        'file' in read.structuredContent &&
+        typeof read.structuredContent.file === 'object' &&
+        read.structuredContent.file !== null &&
+        'content' in read.structuredContent.file
+        ? read.structuredContent.file.content
+        : undefined,
+      'alpha',
+    );
+
+    const list = await client.callTool({
+      name: 'file_list',
+      arguments: { workspaceId: workspace.workspaceId, path: 'notes', limit: 10 },
+    });
+    assert.equal(list.isError, undefined);
+    assert.deepEqual(
+      typeof list.structuredContent === 'object' &&
+        list.structuredContent !== null &&
+        'listing' in list.structuredContent &&
+        typeof list.structuredContent.listing === 'object' &&
+        list.structuredContent.listing !== null &&
+        'entries' in list.structuredContent.listing &&
+        Array.isArray(list.structuredContent.listing.entries)
+        ? list.structuredContent.listing.entries.map((entry) =>
+            typeof entry === 'object' && entry !== null && 'name' in entry ? entry.name : null,
+          )
+        : [],
+      ['a.txt', 'b.txt'],
+    );
+
+    const search = await client.callTool({
+      name: 'file_search',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: '.',
+        glob: 'notes/**/*.txt',
+        query: 'needle',
+        maxResults: 10,
+      },
+    });
+    assert.equal(search.isError, undefined);
+    assert.deepEqual(
+      typeof search.structuredContent === 'object' &&
+        search.structuredContent !== null &&
+        'search' in search.structuredContent &&
+        typeof search.structuredContent.search === 'object' &&
+        search.structuredContent.search !== null &&
+        'matches' in search.structuredContent.search &&
+        Array.isArray(search.structuredContent.search.matches)
+        ? search.structuredContent.search.matches.map((match) =>
+            typeof match === 'object' && match !== null && 'path' in match ? match.path : null,
+          )
+        : [],
+      ['notes/a.txt', 'notes/b.txt'],
+    );
   } finally {
     await client.close();
     await closeFixture(fixture);

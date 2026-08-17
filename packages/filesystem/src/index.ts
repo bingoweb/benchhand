@@ -1,5 +1,6 @@
-import { lstat, open, readdir, realpath } from 'node:fs/promises';
-import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { link, lstat, open, readdir, realpath, rename, rm } from 'node:fs/promises';
+import { basename, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
 
 import type { WorkspaceId, WorkspaceRecord } from '@udmcp/contracts';
 import { minimatch } from 'minimatch';
@@ -18,6 +19,8 @@ const DEFAULT_SEARCH_FILE_BYTES = 1024 * 1024;
 const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SEARCH_ENTRIES = 50_000;
 const PREVIEW_CHARACTERS = 300;
+const MAX_WRITE_BYTES = 16 * 1024 * 1024;
+const HASH_CHUNK_BYTES = 64 * 1024;
 
 export type FileClassification = 'text' | 'binary';
 export type FileEntryType = 'file' | 'directory' | 'symlink' | 'other';
@@ -89,6 +92,22 @@ export interface FilesystemSearchResult {
   skippedOversized: number;
 }
 
+export interface FilesystemWriteRequest {
+  workspaceId: WorkspaceId;
+  path: string;
+  content: string;
+  expectedSha256?: string | null;
+}
+
+export interface FilesystemWriteResult {
+  path: string;
+  created: boolean;
+  previousSha256: string | null;
+  sha256: string;
+  bytesWritten: number;
+  durability: 'file-and-directory' | 'file-only';
+}
+
 export class FilesystemError extends Error {
   readonly code: string;
   readonly path: string | null;
@@ -103,6 +122,9 @@ export class FilesystemError extends Error {
 
 export interface FilesystemServiceOptions {
   resolveWorkspace(workspaceId: WorkspaceId): Promise<WorkspaceRecord | undefined>;
+  linkFile?(stagedPath: string, targetPath: string): Promise<void>;
+  renameFile?(oldPath: string, newPath: string): Promise<void>;
+  syncDirectory?(directory: string): Promise<boolean>;
 }
 
 interface WorkspaceAccess {
@@ -127,9 +149,16 @@ interface SearchState {
 
 export class FilesystemService {
   readonly #resolveWorkspace: FilesystemServiceOptions['resolveWorkspace'];
+  readonly #linkFile: NonNullable<FilesystemServiceOptions['linkFile']>;
+  readonly #renameFile: NonNullable<FilesystemServiceOptions['renameFile']>;
+  readonly #syncDirectory: NonNullable<FilesystemServiceOptions['syncDirectory']>;
+  readonly #writeTails = new Map<string, Promise<void>>();
 
   constructor(options: FilesystemServiceOptions) {
     this.#resolveWorkspace = options.resolveWorkspace;
+    this.#linkFile = options.linkFile ?? link;
+    this.#renameFile = options.renameFile ?? rename;
+    this.#syncDirectory = options.syncDirectory ?? syncDirectoryBestEffort;
   }
 
   async read(request: FilesystemReadRequest): Promise<FilesystemReadResult> {
@@ -292,6 +321,53 @@ export class FilesystemService {
     };
   }
 
+  async write(request: FilesystemWriteRequest): Promise<FilesystemWriteResult> {
+    if (typeof request.content !== 'string') {
+      throw new FilesystemError('INVALID_REQUEST', request.path, 'content must be a string');
+    }
+    const content = Buffer.from(request.content, 'utf8');
+    if (content.byteLength > MAX_WRITE_BYTES) {
+      throw new FilesystemError(
+        'WRITE_TOO_LARGE',
+        request.path,
+        `write content exceeds ${MAX_WRITE_BYTES} UTF-8 bytes`,
+      );
+    }
+    const expectedSha256 = normalizeExpectedSha256(request.expectedSha256);
+    const access = await this.#accessWorkspace(request.workspaceId);
+    const path = normalizeRelativePath(request.path, false);
+    const parentPath = posix.dirname(path);
+    const canonicalParent = await resolveExistingPath(access.root, parentPath);
+    const parentStats = await lstat(canonicalParent).catch((error) => {
+      throw mapFilesystemError(parentPath, error);
+    });
+    if (!parentStats.isDirectory()) {
+      throw new FilesystemError(
+        'PATH_NOT_DIRECTORY',
+        parentPath,
+        `write parent is not a directory: ${parentPath}`,
+      );
+    }
+    const target = join(canonicalParent, basename(path));
+    if (!isSameOrDescendant(access.root, target)) {
+      throw new FilesystemError(
+        'PATH_OUTSIDE_WORKSPACE',
+        path,
+        `write target escapes workspace: ${path}`,
+      );
+    }
+
+    return this.#serializeWrite(target, () =>
+      this.#writeAtomic({
+        path,
+        target,
+        parent: canonicalParent,
+        content,
+        expectedSha256,
+      }),
+    );
+  }
+
   async #accessWorkspace(workspaceId: WorkspaceId): Promise<WorkspaceAccess> {
     const workspace = await this.#resolveWorkspace(workspaceId);
     if (workspace === undefined) {
@@ -445,6 +521,223 @@ export class FilesystemService {
       }
     }
   }
+
+  async #writeAtomic(options: {
+    path: string;
+    target: string;
+    parent: string;
+    content: Buffer;
+    expectedSha256: string | null | undefined;
+  }): Promise<FilesystemWriteResult> {
+    const initial = await inspectWriteTarget(options.target, options.path);
+    enforceWritePrecondition(options.expectedSha256, initial, options.path);
+
+    const tempPath = join(
+      options.parent,
+      `.${basename(options.target)}.udmcp-write-${process.pid}-${randomUUID()}.tmp`,
+    );
+    let tempExists = false;
+    let renamed = false;
+
+    try {
+      const mode = initial.exists ? initial.mode : 0o666;
+      const handle = await open(tempPath, 'wx', mode).catch((error) => {
+        throw mapWriteFailure(options.path, error);
+      });
+      tempExists = true;
+      try {
+        if (initial.exists) await handle.chmod(initial.mode);
+        await handle.writeFile(options.content);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+
+      const beforeCommit = await inspectWriteTarget(options.target, options.path);
+      enforceWritePrecondition(options.expectedSha256, beforeCommit, options.path);
+
+      if (options.expectedSha256 === null) {
+        try {
+          await this.#linkFile(tempPath, options.target);
+        } catch (error) {
+          if (hasErrnoCode(error, 'EEXIST')) {
+            throw new FilesystemError(
+              'WRITE_CONFLICT',
+              options.path,
+              `create-only precondition lost a commit race for ${options.path}`,
+              { cause: error },
+            );
+          }
+          throw mapWriteFailure(options.path, error);
+        }
+        await rm(tempPath, { force: true }).catch(() => {});
+        tempExists = false;
+      } else {
+        await this.#renameFile(tempPath, options.target).catch((error) => {
+          throw mapWriteFailure(options.path, error);
+        });
+        tempExists = false;
+      }
+      renamed = true;
+
+      let directorySynced = false;
+      try {
+        directorySynced = await this.#syncDirectory(options.parent);
+      } catch {
+        directorySynced = false;
+      }
+      const durability = directorySynced ? 'file-and-directory' : 'file-only';
+      return {
+        path: options.path,
+        created: !beforeCommit.exists,
+        previousSha256: beforeCommit.exists ? beforeCommit.sha256 : null,
+        sha256: createHash('sha256').update(options.content).digest('hex'),
+        bytesWritten: options.content.byteLength,
+        durability,
+      };
+    } finally {
+      if (tempExists && !renamed) {
+        await rm(tempPath, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  async #serializeWrite<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#writeTails.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#writeTails.set(key, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.#writeTails.get(key) === tail) this.#writeTails.delete(key);
+    }
+  }
+}
+
+interface WriteTargetState {
+  exists: boolean;
+  mode: number;
+  sha256: string | null;
+}
+
+async function inspectWriteTarget(target: string, portablePath: string): Promise<WriteTargetState> {
+  let stats: Awaited<ReturnType<typeof lstat>>;
+  try {
+    stats = await lstat(target);
+  } catch (error) {
+    if (hasErrnoCode(error, 'ENOENT')) return { exists: false, mode: 0, sha256: null };
+    throw mapFilesystemError(portablePath, error);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new FilesystemError(
+      'PATH_SYMLINK_UNSUPPORTED',
+      portablePath,
+      `atomic write does not replace symlink targets: ${portablePath}`,
+    );
+  }
+  if (!stats.isFile()) {
+    throw new FilesystemError(
+      'PATH_NOT_FILE',
+      portablePath,
+      `atomic write target is not a regular file: ${portablePath}`,
+    );
+  }
+  return {
+    exists: true,
+    mode: stats.mode & 0o7777,
+    sha256: await sha256File(target, portablePath),
+  };
+}
+
+async function sha256File(target: string, portablePath: string): Promise<string> {
+  const handle = await open(target, 'r').catch((error) => {
+    throw mapFilesystemError(portablePath, error);
+  });
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(HASH_CHUNK_BYTES);
+  try {
+    let position = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read({
+        buffer,
+        offset: 0,
+        length: buffer.length,
+        position,
+      });
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  return hash.digest('hex');
+}
+
+function normalizeExpectedSha256(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== 'string' || !/^[0-9a-fA-F]{64}$/.test(value)) {
+    throw new FilesystemError(
+      'INVALID_REQUEST',
+      null,
+      'expectedSha256 must be null or a 64-character hexadecimal SHA-256 digest',
+    );
+  }
+  return value.toLowerCase();
+}
+
+function enforceWritePrecondition(
+  expected: string | null | undefined,
+  current: WriteTargetState,
+  path: string,
+): void {
+  if (expected === undefined) return;
+  if (expected === null) {
+    if (current.exists) {
+      throw new FilesystemError(
+        'WRITE_CONFLICT',
+        path,
+        `create-only precondition failed because target already exists: ${path}`,
+      );
+    }
+    return;
+  }
+  if (!current.exists || current.sha256 !== expected) {
+    throw new FilesystemError('WRITE_CONFLICT', path, `SHA-256 precondition failed for ${path}`);
+  }
+}
+
+async function syncDirectoryBestEffort(directory: string): Promise<boolean> {
+  if (process.platform === 'win32') return false;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(directory, 'r');
+    await handle.sync();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function mapWriteFailure(path: string, error: unknown): FilesystemError {
+  if (error instanceof FilesystemError) return error;
+  if (hasErrnoCode(error, 'EACCES') || hasErrnoCode(error, 'EPERM')) {
+    return new FilesystemError('PATH_INACCESSIBLE', path, `write target is inaccessible: ${path}`, {
+      cause: error,
+    });
+  }
+  return new FilesystemError(
+    'WRITE_FAILED',
+    path,
+    error instanceof Error ? error.message : `atomic write failed for ${path}`,
+    { cause: error },
+  );
 }
 
 function normalizeRelativePath(input: string, allowRoot: boolean): string {

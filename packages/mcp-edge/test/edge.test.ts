@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -69,6 +70,10 @@ function createGitRepository(root: string): string {
   return repo;
 }
 
+function sha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 test('pinned 2026 client discovers the modern era and calls the real daemon health tool', async () => {
   const fixture = await createFixture();
   const client = await connectClient(fixture.edge.url, 'modern');
@@ -87,6 +92,7 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
         'file_read',
         'file_list',
         'file_search',
+        'file_write',
         'workspace_get',
         'workspace_open',
       ],
@@ -322,6 +328,79 @@ test('file tools expose bounded read list and search through a durable workspace
           )
         : [],
       ['notes/a.txt', 'notes/b.txt'],
+    );
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
+  }
+});
+
+test('file_write exposes atomic hash-precondition semantics and non-idempotent mutation annotations', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'write-project');
+  mkdirSync(project);
+  writeFileSync(join(project, 'config.txt'), 'before\n');
+
+  try {
+    const listed = await client.listTools();
+    const writeTool = listed.tools.find((tool) => tool.name === 'file_write');
+    assert.notEqual(writeTool, undefined);
+    assert.deepEqual(writeTool?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+
+    const opened = await client.callTool({ name: 'workspace_open', arguments: { path: project } });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+
+    const written = await client.callTool({
+      name: 'file_write',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: 'config.txt',
+        content: 'after\n',
+        expectedSha256: sha256('before\n'),
+      },
+    });
+    assert.equal(written.isError, undefined);
+    assert.equal(
+      typeof written.structuredContent === 'object' &&
+        written.structuredContent !== null &&
+        'write' in written.structuredContent &&
+        typeof written.structuredContent.write === 'object' &&
+        written.structuredContent.write !== null &&
+        'sha256' in written.structuredContent.write
+        ? written.structuredContent.write.sha256
+        : undefined,
+      sha256('after\n'),
+    );
+
+    const stale = await client.callTool({
+      name: 'file_write',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: 'config.txt',
+        content: 'stale\n',
+        expectedSha256: sha256('before\n'),
+      },
+    });
+    assert.equal(stale.isError, true);
+    assert.equal(
+      typeof stale.structuredContent === 'object' &&
+        stale.structuredContent !== null &&
+        'errorCode' in stale.structuredContent
+        ? stale.structuredContent.errorCode
+        : undefined,
+      'WRITE_CONFLICT',
     );
   } finally {
     await client.close();

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
@@ -45,6 +45,10 @@ function createGitRepository(root: string): string {
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);
   return repo;
+}
+
+function sha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 function rawRpc(socketPath: string, payload: unknown): Promise<unknown> {
@@ -484,6 +488,72 @@ test('filesystem RPC reads lists and searches only through an available durable 
         (error: unknown) =>
           error instanceof RpcCallError && error.code === 'PATH_OUTSIDE_WORKSPACE',
       );
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('file.write RPC commits atomically and returns a structured stale-hash conflict', async () => {
+  const dir = testTempDir('udmcp-daemon-file-write-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'file-write');
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  writeFileSync(join(project, 'config.txt'), 'before\n');
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_file_write_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+
+      const written = await client.call({
+        requestId: 'req_file_write_commit',
+        method: 'file.write',
+        params: {
+          workspaceId: workspace.workspaceId,
+          path: 'config.txt',
+          content: 'after\n',
+          expectedSha256: sha256('before\n'),
+        },
+      });
+      assert.deepEqual(written, {
+        path: 'config.txt',
+        created: false,
+        previousSha256: sha256('before\n'),
+        sha256: sha256('after\n'),
+        bytesWritten: 6,
+        durability: 'file-and-directory',
+      });
+      assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), 'after\n');
+
+      await assert.rejects(
+        () =>
+          client.call({
+            requestId: 'req_file_write_conflict',
+            method: 'file.write',
+            params: {
+              workspaceId: workspace.workspaceId,
+              path: 'config.txt',
+              content: 'stale\n',
+              expectedSha256: sha256('before\n'),
+            },
+          }),
+        (error: unknown) =>
+          error instanceof RpcCallError &&
+          error.code === 'WRITE_CONFLICT' &&
+          error.retryable === false,
+      );
+      assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), 'after\n');
     } finally {
       await daemon.close();
     }

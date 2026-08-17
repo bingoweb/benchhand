@@ -367,6 +367,10 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
       return dispatchFilesystem(() =>
         context.filesystem.search(readFileSearchParams(request.params)),
       );
+    case 'file.write':
+      return dispatchFilesystem(() =>
+        context.filesystem.write(readFileWriteParams(request.params)),
+      );
     default:
       throw new DispatchError({
         code: 'METHOD_NOT_FOUND',
@@ -428,6 +432,27 @@ function readFileSearchParams(params: unknown) {
     ...optionalNumber(value, 'maxDepth'),
     ...optionalNumber(value, 'maxFileBytes'),
   };
+}
+
+function readFileWriteParams(params: unknown) {
+  const value = readParamsObject(params, 'file.write');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'file.write');
+  const path = readRequiredString(value.path, 'file.write params.path');
+  const content = readRequiredString(value.content, 'file.write params.content');
+  let expectedSha256: string | null | undefined;
+  if ('expectedSha256' in value) {
+    if (value.expectedSha256 !== null && typeof value.expectedSha256 !== 'string') {
+      throw new DispatchError({
+        code: 'INVALID_REQUEST',
+        message: 'file.write params.expectedSha256 must be a string or null',
+        retryable: false,
+      });
+    }
+    expectedSha256 = value.expectedSha256;
+  }
+  return expectedSha256 === undefined
+    ? { workspaceId, path, content }
+    : { workspaceId, path, content, expectedSha256 };
 }
 
 function readParamsObject(params: unknown, method: string): Record<string, unknown> {

@@ -125,6 +125,18 @@ const fileSearchResultSchema = z.object({
   skippedOversized: z.number().int().nonnegative(),
 });
 
+const fileWriteResultSchema = z.object({
+  path: z.string().min(1),
+  created: z.boolean(),
+  previousSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  bytesWritten: z.number().int().nonnegative(),
+  durability: z.enum(['file-and-directory', 'file-only']),
+});
+
 const filesystemErrorOutputSchema = z.object({
   ok: z.literal(false),
   errorCode: z.string().min(1),
@@ -144,6 +156,11 @@ const fileListToolOutputSchema = z.discriminatedUnion('ok', [
 
 const fileSearchToolOutputSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), search: fileSearchResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const fileWriteToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), write: fileWriteResultSchema }),
   filesystemErrorOutputSchema,
 ]);
 
@@ -405,6 +422,35 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   server.registerTool(
+    'file_write',
+    {
+      title: 'Write File Atomically',
+      description:
+        'Atomically replace or create a workspace-relative text file with optional SHA-256 precondition conflict detection.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        path: z.string().min(1),
+        content: z.string(),
+        expectedSha256: z
+          .string()
+          .regex(/^[0-9a-fA-F]{64}$/)
+          .nullable()
+          .optional(),
+      }),
+      outputSchema: fileWriteToolOutputSchema,
+      annotations: workspaceOpenAnnotations(),
+    },
+    async (params) =>
+      callFilesystemRpc(
+        daemonClient,
+        'file.write',
+        definedParams(params),
+        fileWriteResultSchema,
+        'write',
+      ),
+  );
+
+  server.registerTool(
     'workspace_get',
     {
       title: 'Get Workspace',
@@ -443,10 +489,10 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
 
 async function callFilesystemRpc(
   daemonClient: ReturnType<typeof createLocalRpcClient>,
-  method: 'file.read' | 'file.list' | 'file.search',
+  method: 'file.read' | 'file.list' | 'file.search' | 'file.write',
   params: Record<string, JsonValue>,
   schema: z.ZodType,
-  resultKey: 'file' | 'listing' | 'search',
+  resultKey: 'file' | 'listing' | 'search' | 'write',
 ) {
   try {
     const raw = await daemonClient.call({

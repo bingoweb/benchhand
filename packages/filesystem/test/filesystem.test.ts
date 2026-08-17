@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,10 +53,18 @@ async function workspaceRecord(
   };
 }
 
-function serviceFor(record: WorkspaceRecord | undefined): FilesystemService {
+function serviceFor(
+  record: WorkspaceRecord | undefined,
+  overrides: Partial<ConstructorParameters<typeof FilesystemService>[0]> = {},
+): FilesystemService {
   return new FilesystemService({
     resolveWorkspace: async (_workspaceId: WorkspaceId) => record,
+    ...overrides,
   });
+}
+
+function sha256(content: string | Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 test('reads a bounded byte range without loading or returning bytes beyond the request', async () => {
@@ -249,6 +269,251 @@ test('fails closed for unknown or unavailable durable workspaces before filesyst
       () => serviceFor(missing).list({ workspaceId, path: '.' }),
       (error: unknown) =>
         error instanceof FilesystemError && error.code === 'WORKSPACE_UNAVAILABLE',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('atomically replaces a regular file with a matching hash precondition and preserves mode', async () => {
+  const dir = tempDir('udmcp-filesystem-write-replace-');
+  const path = join(dir, 'config.txt');
+  writeFileSync(path, 'before\n');
+  chmodSync(path, 0o640);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const result = await service.write({
+      workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+      path: 'config.txt',
+      content: 'after\n',
+      expectedSha256: sha256('before\n'),
+    });
+
+    assert.equal(readFileSync(path, 'utf8'), 'after\n');
+    assert.equal(statSync(path).mode & 0o777, 0o640);
+    assert.deepEqual(result, {
+      path: 'config.txt',
+      created: false,
+      previousSha256: sha256('before\n'),
+      sha256: sha256('after\n'),
+      bytesWritten: 6,
+      durability: 'file-and-directory',
+    });
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('hash conflict leaves the final file byte-identical and cleans the temp file', async () => {
+  const dir = tempDir('udmcp-filesystem-write-conflict-');
+  const path = join(dir, 'config.txt');
+  writeFileSync(path, 'current\n');
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    await assert.rejects(
+      () =>
+        service.write({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'config.txt',
+          content: 'replacement\n',
+          expectedSha256: sha256('stale\n'),
+        }),
+      (error: unknown) => error instanceof FilesystemError && error.code === 'WRITE_CONFLICT',
+    );
+    assert.equal(readFileSync(path, 'utf8'), 'current\n');
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('null hash is create-only and never overwrites an existing target', async () => {
+  const dir = tempDir('udmcp-filesystem-write-create-');
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+    const created = await service.write({
+      workspaceId,
+      path: 'new.txt',
+      content: 'first\n',
+      expectedSha256: null,
+    });
+    assert.equal(created.created, true);
+    assert.equal(created.previousSha256, null);
+
+    await assert.rejects(
+      () =>
+        service.write({
+          workspaceId,
+          path: 'new.txt',
+          content: 'second\n',
+          expectedSha256: null,
+        }),
+      (error: unknown) => error instanceof FilesystemError && error.code === 'WRITE_CONFLICT',
+    );
+    assert.equal(readFileSync(join(dir, 'new.txt'), 'utf8'), 'first\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('serializes concurrent writes so one stale precondition loses without partial output', async () => {
+  const dir = tempDir('udmcp-filesystem-write-concurrent-');
+  const path = join(dir, 'shared.txt');
+  writeFileSync(path, 'base\n');
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+    const expectedSha256 = sha256('base\n');
+    const results = await Promise.allSettled([
+      service.write({ workspaceId, path: 'shared.txt', content: 'left\n', expectedSha256 }),
+      service.write({ workspaceId, path: 'shared.txt', content: 'right\n', expectedSha256 }),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    const rejection = results.find((result) => result.status === 'rejected');
+    assert.equal(
+      rejection?.status === 'rejected' &&
+        rejection.reason instanceof FilesystemError &&
+        rejection.reason.code === 'WRITE_CONFLICT',
+      true,
+    );
+    assert.equal(['left\n', 'right\n'].includes(readFileSync(path, 'utf8')), true);
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('write rejects symlink targets and parent symlink escape before creating temp files', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const dir = tempDir('udmcp-filesystem-write-symlink-');
+  const root = join(dir, 'root');
+  const outside = join(dir, 'outside');
+  mkdirSync(root);
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+  symlinkSync(join(outside, 'secret.txt'), join(root, 'file-link'));
+  symlinkSync(outside, join(root, 'dir-link'));
+
+  try {
+    const service = serviceFor(await workspaceRecord(root));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+    await assert.rejects(
+      () => service.write({ workspaceId, path: 'file-link', content: 'blocked\n' }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATH_SYMLINK_UNSUPPORTED',
+    );
+    await assert.rejects(
+      () => service.write({ workspaceId, path: 'dir-link/new.txt', content: 'blocked\n' }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATH_OUTSIDE_WORKSPACE',
+    );
+    assert.equal(readFileSync(join(outside, 'secret.txt'), 'utf8'), 'secret\n');
+    assert.equal(lstatSync(join(root, 'file-link')).isSymbolicLink(), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rename failure leaves the final file unchanged and removes the staged temp file', async () => {
+  const dir = tempDir('udmcp-filesystem-write-rename-failure-');
+  const path = join(dir, 'config.txt');
+  writeFileSync(path, 'stable\n');
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir), {
+      renameFile: async () => {
+        const error = new Error('fixture rename failure') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      },
+    });
+    await assert.rejects(
+      () =>
+        service.write({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'config.txt',
+          content: 'replacement\n',
+          expectedSha256: sha256('stable\n'),
+        }),
+      (error: unknown) => error instanceof FilesystemError && error.code === 'WRITE_FAILED',
+    );
+    assert.equal(readFileSync(path, 'utf8'), 'stable\n');
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reports file-only durability after a committed rename when directory sync is unavailable', async () => {
+  const dir = tempDir('udmcp-filesystem-write-dir-sync-');
+  const path = join(dir, 'config.txt');
+  writeFileSync(path, 'before\n');
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir), {
+      syncDirectory: async () => {
+        throw new Error('fixture directory sync failure after commit');
+      },
+    });
+    const result = await service.write({
+      workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+      path: 'config.txt',
+      content: 'committed\n',
+      expectedSha256: sha256('before\n'),
+    });
+    assert.equal(readFileSync(path, 'utf8'), 'committed\n');
+    assert.equal(result.durability, 'file-only');
+    assert.equal(result.sha256, sha256('committed\n'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('create-only commit never overwrites a target that appears after the precondition check', async () => {
+  const dir = tempDir('udmcp-filesystem-write-create-race-');
+  const path = join(dir, 'new.txt');
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir), {
+      linkFile: async (stagedPath, targetPath) => {
+        writeFileSync(targetPath, 'external-winner\n');
+        const { link } = await import('node:fs/promises');
+        await link(stagedPath, targetPath);
+      },
+    });
+    await assert.rejects(
+      () =>
+        service.write({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'new.txt',
+          content: 'udmcp-loser\n',
+          expectedSha256: null,
+        }),
+      (error: unknown) => error instanceof FilesystemError && error.code === 'WRITE_CONFLICT',
+    );
+    assert.equal(readFileSync(path, 'utf8'), 'external-winner\n');
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      [],
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

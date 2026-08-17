@@ -7,13 +7,15 @@ import {
   CapabilityDescriptorSchema,
   ErrorEnvelopeSchema,
   MutationMetadataSchema,
-  ResultEnvelopeSchema,
+  OperationStateSchema,
   parseCapabilityDescriptor,
   parseEntityVersion,
   parseErrorEnvelope,
   parseHealthState,
   parseMutationMetadata,
+  parseOperationState,
   parseResultEnvelope,
+  ResultEnvelopeSchema,
 } from '../src/contracts.js';
 
 test('result envelope survives a JSON serialization roundtrip', () => {
@@ -94,6 +96,13 @@ test('mutation metadata is explicit about retry and danger semantics', () => {
   assert.deepEqual(parseMutationMetadata(input), input);
 });
 
+test('operation journal state is a closed durable contract', () => {
+  assert.equal(parseOperationState('accepted'), 'accepted');
+  assert.equal(parseOperationState('unknown-needs-reconcile'), 'unknown-needs-reconcile');
+  assert.equal(parseOperationState('rolled_back'), 'rolled_back');
+  assert.throws(() => parseOperationState('retry-it-probably'), /invalid operation state/i);
+});
+
 test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () => {
   const ajv = new Ajv2020({ strict: true });
 
@@ -101,12 +110,10 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
   const validateError = ajv.compile(ErrorEnvelopeSchema);
   const validateCapability = ajv.compile(CapabilityDescriptorSchema);
   const validateMutation = ajv.compile(MutationMetadataSchema);
+  const validateOperationState = ajv.compile(OperationStateSchema);
 
   assert.equal(validateResult({ ok: true, result: { value: 1 } }), true);
-  assert.equal(
-    validateResult({ ok: true, result: { value: 1 }, unexpected: true }),
-    false,
-  );
+  assert.equal(validateResult({ ok: true, result: { value: 1 }, unexpected: true }), false);
   assert.equal(
     validateError({
       ok: false,
@@ -128,4 +135,6 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
     }),
     true,
   );
+  assert.equal(validateOperationState('committed'), true);
+  assert.equal(validateOperationState('maybe'), false);
 });

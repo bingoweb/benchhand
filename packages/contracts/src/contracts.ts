@@ -42,6 +42,20 @@ export const HealthStateSchema = Type.Union(
 
 export type HealthState = Static<typeof HealthStateSchema>;
 
+export const OperationStateSchema = Type.Union(
+  [
+    Type.Literal('accepted'),
+    Type.Literal('running'),
+    Type.Literal('committed'),
+    Type.Literal('failed'),
+    Type.Literal('unknown-needs-reconcile'),
+    Type.Literal('rolled_back'),
+  ],
+  { $schema: JSON_SCHEMA_2020_12 },
+);
+
+export type OperationState = Static<typeof OperationStateSchema>;
+
 export const EntityVersionSchema = Type.Integer({
   $schema: JSON_SCHEMA_2020_12,
   minimum: 0,
@@ -134,11 +148,7 @@ function parseSchema<Schema extends TSchema>(
 }
 
 function isJsonValue(value: unknown, seen = new WeakSet<object>()): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  ) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return true;
   }
 
@@ -184,17 +194,15 @@ export function parseHealthState(value: unknown): HealthState {
   return parseSchema(HealthStateSchema, value, 'health state');
 }
 
-export function parseEntityVersion(value: unknown): EntityVersion {
-  return parseSchema(
-    EntityVersionSchema,
-    value,
-    'entity version',
-  ) as EntityVersion;
+export function parseOperationState(value: unknown): OperationState {
+  return parseSchema(OperationStateSchema, value, 'operation state');
 }
 
-export function parseCapabilityDescriptor(
-  value: unknown,
-): CapabilityDescriptor {
+export function parseEntityVersion(value: unknown): EntityVersion {
+  return parseSchema(EntityVersionSchema, value, 'entity version') as EntityVersion;
+}
+
+export function parseCapabilityDescriptor(value: unknown): CapabilityDescriptor {
   return parseSchema(CapabilityDescriptorSchema, value, 'capability descriptor');
 }
 

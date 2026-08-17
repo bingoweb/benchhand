@@ -16,7 +16,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "@benchhand/contracts": "0.0.0-dev",
     "@benchhand/local-rpc": "0.0.0-dev",
-    "zod": "4.2.1"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",

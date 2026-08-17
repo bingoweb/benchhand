@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -14,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { parseEntityId } from '@udmcp/contracts';
 import { openSqliteDatabase } from '@udmcp/storage';
 
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../src/index.js';
@@ -21,6 +23,34 @@ import { WorkspaceRegistry, WorkspaceRegistryError } from '../src/index.js';
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
+
+const LEGACY_WORKSPACE_REGISTRY_MIGRATION = {
+  id: '0002-workspace-registry',
+  sql: `
+    CREATE TABLE workspace_registry (
+      workspace_id TEXT PRIMARY KEY,
+      canonical_path TEXT NOT NULL,
+      requested_path TEXT NOT NULL,
+      filesystem_identity TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK (mode = 'checkout'),
+      repo_root TEXT,
+      worktree_path TEXT,
+      base_ref TEXT,
+      branch TEXT,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL,
+      owner_instance TEXT,
+      status TEXT NOT NULL CHECK (
+        status IN ('available', 'missing', 'inaccessible', 'invalid')
+      ),
+      metadata_version INTEGER NOT NULL CHECK (metadata_version >= 1),
+      UNIQUE(canonical_path, filesystem_identity, mode)
+    ) STRICT;
+
+    CREATE INDEX workspace_registry_status_idx
+      ON workspace_registry(status);
+  `,
+} as const;
 
 test('opens a checkout workspace with canonical path, repo root and durable metadata', async () => {
   const dir = tempDir('udmcp-workspace-open-');
@@ -46,6 +76,62 @@ test('opens a checkout workspace with canonical path, repo root and durable meta
     assert.equal(workspace.status, 'available');
     assert.equal(workspace.metadataVersion, 1);
     assert.equal(workspace.createdAt, workspace.lastUsedAt);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrades the committed checkout-only registry migration without checksum drift or data loss', async () => {
+  const dir = tempDir('udmcp-workspace-migration-upgrade-');
+  const project = join(dir, 'legacy-project');
+  mkdirSync(project);
+  const canonicalPath = await realpath(project);
+  const stats = statSync(canonicalPath, { bigint: true });
+  const filesystemIdentity = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}`;
+  const db = openSqliteDatabase(join(dir, 'state.sqlite'));
+
+  try {
+    db.applyMigrations([LEGACY_WORKSPACE_REGISTRY_MIGRATION]);
+    db.run(
+      `
+        INSERT INTO workspace_registry(
+          workspace_id,
+          canonical_path,
+          requested_path,
+          filesystem_identity,
+          mode,
+          repo_root,
+          worktree_path,
+          base_ref,
+          branch,
+          created_at,
+          last_used_at,
+          owner_instance,
+          status,
+          metadata_version
+        ) VALUES (?, ?, ?, ?, 'checkout', NULL, NULL, NULL, NULL, ?, ?, NULL, 'available', 1)
+      `,
+      [
+        'ws_legacy',
+        canonicalPath,
+        project,
+        filesystemIdentity,
+        '2026-08-17T15:00:00.000Z',
+        '2026-08-17T15:00:00.000Z',
+      ],
+    );
+
+    const registry = new WorkspaceRegistry(db, { worktreeRoot: join(dir, 'managed') });
+    const legacy = await registry.get(parseEntityId('workspace', 'ws_legacy'));
+    assert.equal(legacy?.workspaceId, 'ws_legacy');
+    assert.equal(legacy?.mode, 'checkout');
+    assert.equal(legacy?.canonicalPath, canonicalPath);
+
+    assert.deepEqual(
+      db.all<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id').map((row) => row.id),
+      ['0002-workspace-registry', '0003-worktree-manager'],
+    );
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });

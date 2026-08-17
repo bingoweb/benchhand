@@ -56,9 +56,12 @@ export const OperationStateSchema = Type.Union(
 
 export type OperationState = Static<typeof OperationStateSchema>;
 
-export const WorkspaceModeSchema = Type.Union([Type.Literal('checkout')], {
-  $schema: JSON_SCHEMA_2020_12,
-});
+export const WorkspaceModeSchema = Type.Union(
+  [Type.Literal('checkout'), Type.Literal('worktree')],
+  {
+    $schema: JSON_SCHEMA_2020_12,
+  },
+);
 
 export type WorkspaceMode = Static<typeof WorkspaceModeSchema>;
 

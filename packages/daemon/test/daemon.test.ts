@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,6 +26,25 @@ function ipcPath(dir: string, name: string): string {
 function testTempDir(prefix: string): string {
   const base = process.platform === 'win32' ? tmpdir() : '/tmp';
   return mkdtempSync(join(base, prefix));
+}
+
+function git(cwd: string, args: readonly string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function createGitRepository(root: string): string {
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  git(repo, ['init', '-q', '-b', 'main']);
+  git(repo, ['config', 'user.name', 'UDMCP Test']);
+  git(repo, ['config', 'user.email', 'udmcp-test@example.invalid']);
+  writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
+  git(repo, ['add', 'tracked.txt']);
+  git(repo, ['commit', '-q', '-m', 'initial']);
+  return repo;
 }
 
 function rawRpc(socketPath: string, payload: unknown): Promise<unknown> {
@@ -283,6 +302,49 @@ test('workspace RPC reuses the same durable handle across daemon restart', async
     const missingRecord = parseWorkspaceRecord(missing);
     assert.equal(missingRecord.workspaceId, workspaceId);
     assert.equal(missingRecord.status, 'missing');
+  } finally {
+    await second?.close();
+    await first?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('workspace RPC creates and reuses worktree mode across daemon restart', async () => {
+  const dir = testTempDir('udmcp-daemon-worktree-restart-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'worktree-restart');
+  const repo = createGitRepository(dir);
+  let first: DaemonHandle | undefined;
+  let second: DaemonHandle | undefined;
+
+  try {
+    first = await startDaemon({ databasePath, socketPath });
+    const client = createLocalRpcClient({ socketPath });
+    const firstRecord = parseWorkspaceRecord(
+      await client.call({
+        requestId: 'req_worktree_open_first',
+        method: 'workspace.open',
+        params: { path: repo, mode: 'worktree', baseRef: 'HEAD' },
+      }),
+    );
+    assert.equal(firstRecord.mode, 'worktree');
+    assert.equal(firstRecord.worktreePath, firstRecord.canonicalPath);
+    assert.match(firstRecord.baseRef ?? '', /^[0-9a-f]{40,64}$/);
+    assert.match(firstRecord.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+    await first.close();
+
+    second = await startDaemon({ databasePath, socketPath });
+    const secondRecord = parseWorkspaceRecord(
+      await client.call({
+        requestId: 'req_worktree_open_second',
+        method: 'workspace.open',
+        params: { path: repo, mode: 'worktree', baseRef: 'HEAD' },
+      }),
+    );
+    assert.equal(secondRecord.workspaceId, firstRecord.workspaceId);
+    assert.equal(secondRecord.canonicalPath, firstRecord.canonicalPath);
+    assert.equal(secondRecord.ownerInstance, second.instanceId);
+    assert.equal(secondRecord.metadataVersion, firstRecord.metadataVersion + 1);
   } finally {
     await second?.close();
     await first?.close();

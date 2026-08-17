@@ -3,6 +3,7 @@ import type { Stats } from 'node:fs';
 import { lstat, unlink } from 'node:fs/promises';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import net from 'node:net';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   type JsonValue,
@@ -22,6 +23,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 export interface StartDaemonOptions {
   databasePath: string;
   socketPath: string;
+  worktreeRoot?: string;
 }
 
 export interface DaemonHandle {
@@ -47,6 +49,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
   if (options.socketPath.length === 0) {
     throw new TypeError('socketPath must not be empty');
   }
+  if (options.worktreeRoot !== undefined && options.worktreeRoot.length === 0) {
+    throw new TypeError('worktreeRoot must not be empty');
+  }
 
   await prepareIpcEndpoint(options.socketPath);
 
@@ -57,7 +62,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     const instanceId = `daemon_${randomUUID()}`;
     const journal = new OperationJournal(database);
     journal.reconcileInterrupted();
-    const workspaces = new WorkspaceRegistry(database, { ownerInstance: instanceId });
+    const workspaces = new WorkspaceRegistry(database, {
+      ownerInstance: instanceId,
+      worktreeRoot:
+        options.worktreeRoot ?? join(dirname(resolve(options.databasePath)), 'worktrees'),
+    });
     const storageIntegrity = database.integrityCheck();
     if (storageIntegrity !== 'ok') {
       throw new Error(`SQLite integrity check failed: ${storageIntegrity}`);
@@ -313,9 +322,12 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
       return parseResultEnvelope({ ok: true, result: record }).result as JsonValue;
     }
     case 'workspace.open': {
-      const path = readWorkspaceOpenPath(request.params);
+      const open = readWorkspaceOpenParams(request.params);
       try {
-        const workspace = await context.workspaces.open(path);
+        const workspace = await context.workspaces.open(open.path, {
+          mode: open.mode,
+          ...(open.baseRef === undefined ? {} : { baseRef: open.baseRef }),
+        });
         return parseResultEnvelope({ ok: true, result: workspace }).result as JsonValue;
       } catch (error) {
         if (error instanceof WorkspaceRegistryError) {
@@ -350,7 +362,11 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
   }
 }
 
-function readWorkspaceOpenPath(params: unknown): string {
+function readWorkspaceOpenParams(params: unknown): {
+  path: string;
+  mode: 'checkout' | 'worktree';
+  baseRef?: string;
+} {
   if (
     typeof params !== 'object' ||
     params === null ||
@@ -364,7 +380,40 @@ function readWorkspaceOpenPath(params: unknown): string {
       retryable: false,
     });
   }
-  return params.path;
+
+  let mode: 'checkout' | 'worktree' = 'checkout';
+  if ('mode' in params && params.mode !== undefined) {
+    if (params.mode !== 'checkout' && params.mode !== 'worktree') {
+      throw new DispatchError({
+        code: 'INVALID_REQUEST',
+        message: 'workspace.open params.mode must be checkout or worktree',
+        retryable: false,
+      });
+    }
+    mode = params.mode;
+  }
+
+  let baseRef: string | undefined;
+  if ('baseRef' in params && params.baseRef !== undefined) {
+    if (typeof params.baseRef !== 'string' || params.baseRef.length === 0) {
+      throw new DispatchError({
+        code: 'INVALID_REQUEST',
+        message: 'workspace.open params.baseRef must be a non-empty string',
+        retryable: false,
+      });
+    }
+    baseRef = params.baseRef;
+  }
+
+  if (mode !== 'worktree' && baseRef !== undefined) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'workspace.open params.baseRef requires worktree mode',
+      retryable: false,
+    });
+  }
+
+  return baseRef === undefined ? { path: params.path, mode } : { path: params.path, mode, baseRef };
 }
 
 function readWorkspaceIdParam(params: unknown) {

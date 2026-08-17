@@ -184,9 +184,23 @@ test('workspace record is a closed durable wire contract', () => {
   };
 
   assert.deepEqual(parseWorkspaceRecord(record), record);
-  assert.throws(
-    () => parseWorkspaceRecord({ ...record, mode: 'worktree' }),
-    /invalid workspace record/i,
+  assert.deepEqual(
+    parseWorkspaceRecord({
+      ...record,
+      mode: 'worktree',
+      canonicalPath: '/state/worktrees/fixture',
+      worktreePath: '/state/worktrees/fixture',
+      baseRef: '0123456789abcdef0123456789abcdef01234567',
+      branch: 'udmcp/fixture',
+    }),
+    {
+      ...record,
+      mode: 'worktree',
+      canonicalPath: '/state/worktrees/fixture',
+      worktreePath: '/state/worktrees/fixture',
+      baseRef: '0123456789abcdef0123456789abcdef01234567',
+      branch: 'udmcp/fixture',
+    },
   );
   assert.throws(
     () => parseWorkspaceRecord({ ...record, status: 'mostly-available' }),
@@ -257,7 +271,7 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
     true,
   );
   assert.equal(validateWorkspaceMode('checkout'), true);
-  assert.equal(validateWorkspaceMode('worktree'), false);
+  assert.equal(validateWorkspaceMode('worktree'), true);
   assert.equal(validateWorkspaceStatus('missing'), true);
   assert.equal(
     validateWorkspaceRecord({

@@ -58,7 +58,7 @@ const workspaceRecordOutputSchema = z.object({
   workspaceId: z.string().min(1),
   canonicalPath: z.string().min(1),
   requestedPath: z.string().min(1),
-  mode: z.literal('checkout'),
+  mode: z.enum(['checkout', 'worktree']),
   repoRoot: z.string().min(1).nullable(),
   worktreePath: z.string().min(1).nullable(),
   baseRef: z.string().min(1).nullable(),
@@ -263,12 +263,21 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
     {
       title: 'Open Workspace',
       description:
-        'Open or reuse an existing checkout workspace by canonical path and return its durable handle.',
-      inputSchema: z.object({ path: z.string().min(1) }),
+        'Open or reuse a checkout workspace or a UDMCP-managed Git worktree and return its durable handle.',
+      inputSchema: z.object({
+        path: z.string().min(1),
+        mode: z.enum(['checkout', 'worktree']).optional(),
+        baseRef: z.string().min(1).optional(),
+      }),
       outputSchema: workspaceToolOutputSchema,
       annotations: workspaceOpenAnnotations(),
     },
-    async ({ path }) => callWorkspaceRpc(daemonClient, 'workspace.open', { path }),
+    async ({ path, mode, baseRef }) =>
+      callWorkspaceRpc(daemonClient, 'workspace.open', {
+        path,
+        ...(mode === undefined ? {} : { mode }),
+        ...(baseRef === undefined ? {} : { baseRef }),
+      }),
   );
 
   return server;

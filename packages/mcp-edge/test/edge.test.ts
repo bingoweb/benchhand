@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -47,6 +48,25 @@ async function connectClient(url: URL, mode: 'legacy' | 'auto' | 'modern'): Prom
   const client = new Client({ name: `udmcp-test-${mode}`, version: '0.0.0' }, options);
   await client.connect(new StreamableHTTPClientTransport(url));
   return client;
+}
+
+function git(cwd: string, args: readonly string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function createGitRepository(root: string): string {
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  git(repo, ['init', '-q', '-b', 'main']);
+  git(repo, ['config', 'user.name', 'UDMCP Test']);
+  git(repo, ['config', 'user.email', 'udmcp-test@example.invalid']);
+  writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
+  git(repo, ['add', 'tracked.txt']);
+  git(repo, ['commit', '-q', '-m', 'initial']);
+  return repo;
 }
 
 test('pinned 2026 client discovers the modern era and calls the real daemon health tool', async () => {
@@ -151,6 +171,49 @@ test('workspace tools use the durable daemon registry and preserve the handle ac
     await fixture.edge.close();
     await fixture.daemon.close();
     rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test('workspace_open exposes worktree mode and baseRef through the MCP edge', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const repo = createGitRepository(fixture.dir);
+
+  try {
+    const listed = await client.listTools();
+    const openTool = listed.tools.find((tool) => tool.name === 'workspace_open');
+    assert.notEqual(openTool, undefined);
+    const modeSchema =
+      openTool?.inputSchema &&
+      typeof openTool.inputSchema === 'object' &&
+      'properties' in openTool.inputSchema &&
+      typeof openTool.inputSchema.properties === 'object' &&
+      openTool.inputSchema.properties !== null &&
+      'mode' in openTool.inputSchema.properties
+        ? openTool.inputSchema.properties.mode
+        : undefined;
+    assert.notEqual(modeSchema, undefined);
+    assert.equal(JSON.stringify(modeSchema).includes('worktree'), true);
+
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: repo, mode: 'worktree', baseRef: 'HEAD' },
+    });
+    assert.equal(opened.isError, undefined);
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+    assert.equal(workspace.mode, 'worktree');
+    assert.equal(workspace.worktreePath, workspace.canonicalPath);
+    assert.match(workspace.baseRef ?? '', /^[0-9a-f]{40,64}$/);
+    assert.match(workspace.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
   }
 });
 

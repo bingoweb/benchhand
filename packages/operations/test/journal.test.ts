@@ -7,15 +7,15 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseEntityId } from '@udmcp/contracts';
-import { openSqliteDatabase, type SqliteDatabase } from '@udmcp/storage';
+import { parseEntityId } from '@benchhand/contracts';
+import { openSqliteDatabase, type SqliteDatabase } from '@benchhand/storage';
 
 import { OperationConflictError, OperationJournal } from '../src/index.js';
 
 async function withJournal<T>(
   run: (journal: OperationJournal, path: string, db: SqliteDatabase) => Promise<T> | T,
 ): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), 'udmcp-operation-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-operation-test-'));
   const path = join(dir, 'state.sqlite');
   const db = openSqliteDatabase(path);
   const journal = new OperationJournal(db);
@@ -182,13 +182,13 @@ test('startup reconciliation turns interrupted work into reconcile-required', as
 });
 
 test('real SIGKILL leaves durable running state for startup reconciliation', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'udmcp-operation-crash-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-operation-crash-test-'));
   const path = join(dir, 'state.sqlite');
   const fixture = fileURLToPath(new URL('./fixtures/interrupted-worker.ts', import.meta.url));
 
   try {
     const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
-      env: { ...process.env, UDMCP_TEST_DB: path },
+      env: { ...process.env, BENCHHAND_TEST_DB: path },
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
     await once(child, 'message');

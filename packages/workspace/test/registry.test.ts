@@ -15,8 +15,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { parseEntityId } from '@udmcp/contracts';
-import { openSqliteDatabase } from '@udmcp/storage';
+import { parseEntityId } from '@benchhand/contracts';
+import { openSqliteDatabase } from '@benchhand/storage';
 
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../src/index.js';
 
@@ -53,7 +53,7 @@ const LEGACY_WORKSPACE_REGISTRY_MIGRATION = {
 } as const;
 
 test('opens a checkout workspace with canonical path, repo root and durable metadata', async () => {
-  const dir = tempDir('udmcp-workspace-open-');
+  const dir = tempDir('benchhand-workspace-open-');
   const repo = join(dir, 'repo');
   const nested = join(repo, 'packages', 'app');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -83,7 +83,7 @@ test('opens a checkout workspace with canonical path, repo root and durable meta
 });
 
 test('upgrades the committed checkout-only registry migration without checksum drift or data loss', async () => {
-  const dir = tempDir('udmcp-workspace-migration-upgrade-');
+  const dir = tempDir('benchhand-workspace-migration-upgrade-');
   const project = join(dir, 'legacy-project');
   mkdirSync(project);
   const canonicalPath = await realpath(project);
@@ -141,7 +141,7 @@ test('upgrades the committed checkout-only registry migration without checksum d
 test('resolves symlink aliases to one stable workspace id and treats a retargeted alias as a new workspace', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = tempDir('udmcp-workspace-symlink-');
+  const dir = tempDir('benchhand-workspace-symlink-');
   const targetA = join(dir, 'target-a');
   const targetB = join(dir, 'target-b');
   const alias = join(dir, 'current');
@@ -173,7 +173,7 @@ test('resolves symlink aliases to one stable workspace id and treats a retargete
 });
 
 test('reuses the same durable workspace id from a new registry instance and owner', async () => {
-  const dir = tempDir('udmcp-workspace-reuse-');
+  const dir = tempDir('benchhand-workspace-reuse-');
   const project = join(dir, 'project');
   const databasePath = join(dir, 'state.sqlite');
   mkdirSync(project);
@@ -201,7 +201,7 @@ test('reuses the same durable workspace id from a new registry instance and owne
 });
 
 test('atomic duplicate open returns one workspace id across two registry connections', async () => {
-  const dir = tempDir('udmcp-workspace-race-');
+  const dir = tempDir('benchhand-workspace-race-');
   const project = join(dir, 'project');
   const databasePath = join(dir, 'state.sqlite');
   mkdirSync(project);
@@ -229,7 +229,7 @@ test('atomic duplicate open returns one workspace id across two registry connect
 });
 
 test('keeps a deleted workspace handle durable and marks it missing', async () => {
-  const dir = tempDir('udmcp-workspace-missing-');
+  const dir = tempDir('benchhand-workspace-missing-');
   const project = join(dir, 'project');
   mkdirSync(project);
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -250,7 +250,7 @@ test('keeps a deleted workspace handle durable and marks it missing', async () =
 });
 
 test('never rebinds an existing workspace handle when its canonical path is replaced', async () => {
-  const dir = tempDir('udmcp-workspace-replaced-path-');
+  const dir = tempDir('benchhand-workspace-replaced-path-');
   const project = join(dir, 'project');
   const replacement = join(dir, 'replacement');
   mkdirSync(project);
@@ -277,7 +277,7 @@ test('never rebinds an existing workspace handle when its canonical path is repl
 });
 
 test('rejects missing paths, regular files and inaccessible paths with distinct errors', async () => {
-  const dir = tempDir('udmcp-workspace-errors-');
+  const dir = tempDir('benchhand-workspace-errors-');
   const file = join(dir, 'file.txt');
   const blocked = join(dir, 'blocked');
   const blockedProject = join(blocked, 'project');

@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { parseWorkspaceRecord } from '@benchhand/contracts';
+import { type DaemonHandle, startDaemon } from '@benchhand/daemon';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { parseWorkspaceRecord } from '@udmcp/contracts';
-import { type DaemonHandle, startDaemon } from '@udmcp/daemon';
 
 import { type McpEdgeHandle, startMcpEdge } from '../src/index.js';
 
@@ -19,7 +19,7 @@ interface Fixture {
 }
 
 async function createFixture(): Promise<Fixture> {
-  const dir = mkdtempSync(join(tmpdir(), 'udmcp-mcp-edge-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-mcp-edge-test-'));
   const daemon = await startDaemon({
     databasePath: join(dir, 'state.sqlite'),
     socketPath: join(dir, 'daemon.sock'),
@@ -46,7 +46,7 @@ async function connectClient(url: URL, mode: 'legacy' | 'auto' | 'modern'): Prom
         ? { versionNegotiation: { mode: 'auto' as const } }
         : { versionNegotiation: { mode: 'legacy' as const } };
 
-  const client = new Client({ name: `udmcp-test-${mode}`, version: '0.0.0' }, options);
+  const client = new Client({ name: `benchhand-test-${mode}`, version: '0.0.0' }, options);
   await client.connect(new StreamableHTTPClientTransport(url));
   return client;
 }
@@ -62,8 +62,8 @@ function createGitRepository(root: string): string {
   const repo = join(root, 'repo');
   mkdirSync(repo);
   git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.name', 'UDMCP Test']);
-  git(repo, ['config', 'user.email', 'udmcp-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'Benchhand Test']);
+  git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);
@@ -81,6 +81,8 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
     assert.equal(client.getProtocolEra(), 'modern');
     assert.deepEqual(client.getDiscoverResult()?.supportedVersions, ['2026-07-28']);
     assert.equal(client.getDiscoverResult()?.capabilities.tools?.listChanged, false);
+    const discovery = JSON.stringify(client.getDiscoverResult());
+    assert.equal(discovery.includes('"name":"benchhand"'), true);
 
     const listed = await client.listTools();
     assert.deepEqual(
@@ -93,6 +95,7 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
         'file_list',
         'file_search',
         'file_write',
+        'file_patch',
         'workspace_get',
         'workspace_open',
       ],
@@ -225,7 +228,7 @@ test('workspace_open exposes worktree mode and baseRef through the MCP edge', as
     assert.equal(workspace.mode, 'worktree');
     assert.equal(workspace.worktreePath, workspace.canonicalPath);
     assert.match(workspace.baseRef ?? '', /^[0-9a-f]{40,64}$/);
-    assert.match(workspace.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+    assert.match(workspace.branch ?? '', /^benchhand\/[0-9a-f]{20}$/);
   } finally {
     await client.close();
     await closeFixture(fixture);
@@ -402,6 +405,92 @@ test('file_write exposes atomic hash-precondition semantics and non-idempotent m
         : undefined,
       'WRITE_CONFLICT',
     );
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
+  }
+});
+
+test('file_patch exposes deterministic exact edits and structured conflict evidence', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'patch-project');
+  mkdirSync(project);
+  const ambiguousBefore = 'same\nmiddle\nsame\n';
+  writeFileSync(join(project, 'config.txt'), ambiguousBefore);
+
+  try {
+    const listed = await client.listTools();
+    const patchTool = listed.tools.find((tool) => tool.name === 'file_patch');
+    assert.notEqual(patchTool, undefined);
+    assert.deepEqual(patchTool?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+
+    const opened = await client.callTool({ name: 'workspace_open', arguments: { path: project } });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+
+    const ambiguous = await client.callTool({
+      name: 'file_patch',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: 'config.txt',
+        expectedSha256: sha256(ambiguousBefore),
+        edits: [{ oldText: 'same', newText: 'changed' }],
+      },
+    });
+    assert.equal(ambiguous.isError, true);
+    assert.deepEqual(ambiguous.structuredContent, {
+      ok: false,
+      errorCode: 'PATCH_CONFLICT',
+      message: 'patch edit 0 is ambiguous in config.txt',
+      retryable: false,
+      details: {
+        path: 'config.txt',
+        reason: 'ambiguous_match',
+        editIndex: 0,
+        matchCount: 2,
+      },
+    });
+    assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), ambiguousBefore);
+
+    const before = 'alpha = 1\nbeta = 2\ngamma = 3\n';
+    const after = 'alpha = 10\nbeta = 2\ngamma = 30\n';
+    writeFileSync(join(project, 'config.txt'), before);
+    const patched = await client.callTool({
+      name: 'file_patch',
+      arguments: {
+        workspaceId: workspace.workspaceId,
+        path: 'config.txt',
+        expectedSha256: sha256(before),
+        edits: [
+          { oldText: 'alpha = 1', newText: 'alpha = 10' },
+          { oldText: 'gamma = 3', newText: 'gamma = 30' },
+        ],
+      },
+    });
+    assert.equal(patched.isError, undefined);
+    assert.deepEqual(patched.structuredContent, {
+      ok: true,
+      patch: {
+        path: 'config.txt',
+        previousSha256: sha256(before),
+        sha256: sha256(after),
+        editsApplied: 2,
+        bytesWritten: Buffer.byteLength(after),
+        durability: 'file-and-directory',
+      },
+    });
+    assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
   } finally {
     await client.close();
     await closeFixture(fixture);

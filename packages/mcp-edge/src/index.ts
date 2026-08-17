@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { type JsonValue, parseWorkspaceRecord } from '@benchhand/contracts';
+import { createLocalRpcClient, RpcCallError } from '@benchhand/local-rpc';
 import {
   localhostHostValidation,
   localhostOriginValidation,
@@ -10,8 +12,6 @@ import {
   toNodeHandler,
 } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
-import { type JsonValue, parseWorkspaceRecord } from '@udmcp/contracts';
-import { createLocalRpcClient, RpcCallError } from '@udmcp/local-rpc';
 import * as z from 'zod/v4';
 
 const EDGE_VERSION = '0.0.0-dev';
@@ -137,11 +137,21 @@ const fileWriteResultSchema = z.object({
   durability: z.enum(['file-and-directory', 'file-only']),
 });
 
+const filePatchResultSchema = z.object({
+  path: z.string().min(1),
+  previousSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  editsApplied: z.number().int().nonnegative(),
+  bytesWritten: z.number().int().nonnegative(),
+  durability: z.enum(['file-and-directory', 'file-only']),
+});
+
 const filesystemErrorOutputSchema = z.object({
   ok: z.literal(false),
   errorCode: z.string().min(1),
   message: z.string().min(1),
   retryable: z.boolean(),
+  details: z.unknown().optional(),
 });
 
 const fileReadToolOutputSchema = z.discriminatedUnion('ok', [
@@ -161,6 +171,11 @@ const fileSearchToolOutputSchema = z.discriminatedUnion('ok', [
 
 const fileWriteToolOutputSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), write: fileWriteResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const filePatchToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), patch: filePatchResultSchema }),
   filesystemErrorOutputSchema,
 ]);
 
@@ -238,15 +253,15 @@ export async function startMcpEdge(options: StartMcpEdgeOptions): Promise<McpEdg
 
 function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): McpServer {
   const server = new McpServer(
-    { name: 'udmcp', version: EDGE_VERSION },
+    { name: 'benchhand', version: EDGE_VERSION },
     { capabilities: { tools: { listChanged: false } } },
   );
 
   server.registerTool(
     'capabilities',
     {
-      title: 'UDMCP Capabilities',
-      description: 'Report the protocol eras and durable core features supported by UDMCP.',
+      title: 'Benchhand Capabilities',
+      description: 'Report the protocol eras and durable core features supported by Benchhand.',
       inputSchema: z.object({}),
       outputSchema: capabilitiesOutputSchema,
       annotations: readOnlyAnnotations(),
@@ -265,7 +280,7 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   server.registerTool(
     'health',
     {
-      title: 'UDMCP Health',
+      title: 'Benchhand Health',
       description: 'Verify that the MCP edge can reach the durable UDM core daemon.',
       inputSchema: z.object({}),
       outputSchema: healthToolOutputSchema,
@@ -312,7 +327,7 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   server.registerTool(
     'system_info',
     {
-      title: 'UDMCP System Info',
+      title: 'Benchhand System Info',
       description: 'Report the MCP edge runtime and platform without mutating project state.',
       inputSchema: z.object({}),
       outputSchema: systemInfoOutputSchema,
@@ -451,6 +466,39 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   server.registerTool(
+    'file_patch',
+    {
+      title: 'Patch File Deterministically',
+      description:
+        'Apply exact non-overlapping text edits to a workspace-relative file only when its SHA-256 precondition matches. Ambiguous, missing, overlapping, stale, or binary targets fail without fuzzy fallback.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        path: z.string().min(1),
+        expectedSha256: z.string().regex(/^[0-9a-fA-F]{64}$/),
+        edits: z
+          .array(
+            z.object({
+              oldText: z.string().min(1),
+              newText: z.string(),
+            }),
+          )
+          .min(1)
+          .max(256),
+      }),
+      outputSchema: filePatchToolOutputSchema,
+      annotations: workspaceOpenAnnotations(),
+    },
+    async ({ workspaceId, path, expectedSha256, edits }) =>
+      callFilesystemRpc(
+        daemonClient,
+        'file.patch',
+        { workspaceId, path, expectedSha256, edits },
+        filePatchResultSchema,
+        'patch',
+      ),
+  );
+
+  server.registerTool(
     'workspace_get',
     {
       title: 'Get Workspace',
@@ -467,7 +515,7 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
     {
       title: 'Open Workspace',
       description:
-        'Open or reuse a checkout workspace or a UDMCP-managed Git worktree and return its durable handle.',
+        'Open or reuse a checkout workspace or a Benchhand-managed Git worktree and return its durable handle.',
       inputSchema: z.object({
         path: z.string().min(1),
         mode: z.enum(['checkout', 'worktree']).optional(),
@@ -489,10 +537,10 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
 
 async function callFilesystemRpc(
   daemonClient: ReturnType<typeof createLocalRpcClient>,
-  method: 'file.read' | 'file.list' | 'file.search' | 'file.write',
+  method: 'file.read' | 'file.list' | 'file.search' | 'file.write' | 'file.patch',
   params: Record<string, JsonValue>,
   schema: z.ZodType,
-  resultKey: 'file' | 'listing' | 'search' | 'write',
+  resultKey: 'file' | 'listing' | 'search' | 'write' | 'patch',
 ) {
   try {
     const raw = await daemonClient.call({
@@ -511,6 +559,7 @@ async function callFilesystemRpc(
             errorCode: error.code,
             message: error.message,
             retryable: error.retryable,
+            ...(error.details === undefined ? {} : { details: error.details }),
           }
         : {
             ok: false as const,

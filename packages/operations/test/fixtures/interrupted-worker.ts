@@ -1,11 +1,11 @@
-import { parseEntityId } from '@udmcp/contracts';
-import { openSqliteDatabase } from '@udmcp/storage';
+import { parseEntityId } from '@benchhand/contracts';
+import { openSqliteDatabase } from '@benchhand/storage';
 
 import { OperationJournal } from '../../src/index.js';
 
-const path = process.env.UDMCP_TEST_DB;
+const path = process.env.BENCHHAND_TEST_DB;
 if (path === undefined) {
-  throw new Error('UDMCP_TEST_DB is required');
+  throw new Error('BENCHHAND_TEST_DB is required');
 }
 
 const db = openSqliteDatabase(path);

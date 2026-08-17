@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a capability or contract improvement
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Start with the workflow or failure mode, not the implementation you already fell in love with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Desired behavior
+      description: Describe what the user or MCP client should be able to rely on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure and recovery expectations
+      description: What should happen on conflict, restart, timeout, retry, or partial external failure?
+    validations:
+      required: true
+
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Platform considerations
+      description: Note Windows, macOS, or Linux differences if the feature touches OS behavior.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

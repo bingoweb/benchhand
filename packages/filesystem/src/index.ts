@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { link, lstat, open, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
 
-import type { WorkspaceId, WorkspaceRecord } from '@udmcp/contracts';
+import type { JsonValue, WorkspaceId, WorkspaceRecord } from '@benchhand/contracts';
 import { minimatch } from 'minimatch';
 
 const DEFAULT_READ_BYTES = 64 * 1024;
@@ -20,6 +20,7 @@ const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SEARCH_ENTRIES = 50_000;
 const PREVIEW_CHARACTERS = 300;
 const MAX_WRITE_BYTES = 16 * 1024 * 1024;
+const MAX_PATCH_EDITS = 256;
 const HASH_CHUNK_BYTES = 64 * 1024;
 
 export type FileClassification = 'text' | 'binary';
@@ -108,15 +109,47 @@ export interface FilesystemWriteResult {
   durability: 'file-and-directory' | 'file-only';
 }
 
+export interface FilesystemPatchEdit {
+  oldText: string;
+  newText: string;
+}
+
+export interface FilesystemPatchRequest {
+  workspaceId: WorkspaceId;
+  path: string;
+  expectedSha256: string;
+  edits: FilesystemPatchEdit[];
+}
+
+export interface FilesystemPatchResult {
+  path: string;
+  previousSha256: string;
+  sha256: string;
+  editsApplied: number;
+  bytesWritten: number;
+  durability: 'file-and-directory' | 'file-only';
+}
+
+interface FilesystemErrorOptions extends ErrorOptions {
+  details?: JsonValue;
+}
+
 export class FilesystemError extends Error {
   readonly code: string;
   readonly path: string | null;
+  readonly details: JsonValue | undefined;
 
-  constructor(code: string, path: string | null, message: string, options?: ErrorOptions) {
-    super(message, options);
+  constructor(
+    code: string,
+    path: string | null,
+    message: string,
+    options?: FilesystemErrorOptions,
+  ) {
+    super(message, options === undefined ? undefined : { cause: options.cause });
     this.name = 'FilesystemError';
     this.code = code;
     this.path = path;
+    this.details = options?.details;
   }
 }
 
@@ -368,6 +401,101 @@ export class FilesystemService {
     );
   }
 
+  async patch(request: FilesystemPatchRequest): Promise<FilesystemPatchResult> {
+    const expectedSha256 = normalizeRequiredSha256(request.expectedSha256, 'expectedSha256');
+    const edits = normalizePatchEdits(request.edits);
+    const access = await this.#accessWorkspace(request.workspaceId);
+    const path = normalizeRelativePath(request.path, false);
+    const parentPath = posix.dirname(path);
+    const canonicalParent = await resolveExistingPath(access.root, parentPath);
+    const parentStats = await lstat(canonicalParent).catch((error) => {
+      throw mapFilesystemError(parentPath, error);
+    });
+    if (!parentStats.isDirectory()) {
+      throw new FilesystemError(
+        'PATH_NOT_DIRECTORY',
+        parentPath,
+        `patch parent is not a directory: ${parentPath}`,
+      );
+    }
+    const target = join(canonicalParent, basename(path));
+    if (!isSameOrDescendant(access.root, target)) {
+      throw new FilesystemError(
+        'PATH_OUTSIDE_WORKSPACE',
+        path,
+        `patch target escapes workspace: ${path}`,
+      );
+    }
+
+    return this.#serializeWrite(target, async () => {
+      const initial = await inspectWriteTarget(target, path);
+      enforcePatchHashPrecondition(expectedSha256, initial, path);
+      if (initial.size > MAX_WRITE_BYTES) {
+        throw new FilesystemError(
+          'PATCH_TOO_LARGE',
+          path,
+          `patch source exceeds ${MAX_WRITE_BYTES} bytes: ${path}`,
+        );
+      }
+
+      const sourceBuffer = await readWholeFile(target, path, initial.size);
+      const sourceSha256 = createHash('sha256').update(sourceBuffer).digest('hex');
+      if (sourceSha256 !== expectedSha256) {
+        throw patchHashConflict(path, expectedSha256, sourceSha256);
+      }
+      if (classifyBuffer(sourceBuffer) === 'binary') {
+        throw new FilesystemError(
+          'PATCH_BINARY_UNSUPPORTED',
+          path,
+          `deterministic text patch does not support binary content: ${path}`,
+        );
+      }
+
+      const source = decodeUtf8(sourceBuffer);
+      const planned = planExactPatch(source, edits, path);
+      const content = Buffer.from(applyPlannedPatch(source, planned), 'utf8');
+      if (content.byteLength > MAX_WRITE_BYTES) {
+        throw new FilesystemError(
+          'PATCH_TOO_LARGE',
+          path,
+          `patched content exceeds ${MAX_WRITE_BYTES} UTF-8 bytes: ${path}`,
+        );
+      }
+
+      let write: FilesystemWriteResult;
+      try {
+        write = await this.#writeAtomic({
+          path,
+          target,
+          parent: canonicalParent,
+          content,
+          expectedSha256,
+        });
+      } catch (error) {
+        if (error instanceof FilesystemError && error.code === 'WRITE_CONFLICT') {
+          const current = await inspectWriteTarget(target, path);
+          throw patchHashConflict(path, expectedSha256, current.sha256);
+        }
+        if (error instanceof FilesystemError && error.code === 'WRITE_FAILED') {
+          throw new FilesystemError('PATCH_FAILED', path, error.message, {
+            cause: error,
+            ...(error.details === undefined ? {} : { details: error.details }),
+          });
+        }
+        throw error;
+      }
+
+      return {
+        path,
+        previousSha256: expectedSha256,
+        sha256: write.sha256,
+        editsApplied: planned.length,
+        bytesWritten: write.bytesWritten,
+        durability: write.durability,
+      };
+    });
+  }
+
   async #accessWorkspace(workspaceId: WorkspaceId): Promise<WorkspaceAccess> {
     const workspace = await this.#resolveWorkspace(workspaceId);
     if (workspace === undefined) {
@@ -534,7 +662,7 @@ export class FilesystemService {
 
     const tempPath = join(
       options.parent,
-      `.${basename(options.target)}.udmcp-write-${process.pid}-${randomUUID()}.tmp`,
+      `.${basename(options.target)}.benchhand-write-${process.pid}-${randomUUID()}.tmp`,
     );
     let tempExists = false;
     let renamed = false;
@@ -622,6 +750,7 @@ interface WriteTargetState {
   exists: boolean;
   mode: number;
   sha256: string | null;
+  size: number;
 }
 
 async function inspectWriteTarget(target: string, portablePath: string): Promise<WriteTargetState> {
@@ -629,7 +758,7 @@ async function inspectWriteTarget(target: string, portablePath: string): Promise
   try {
     stats = await lstat(target);
   } catch (error) {
-    if (hasErrnoCode(error, 'ENOENT')) return { exists: false, mode: 0, sha256: null };
+    if (hasErrnoCode(error, 'ENOENT')) return { exists: false, mode: 0, sha256: null, size: 0 };
     throw mapFilesystemError(portablePath, error);
   }
   if (stats.isSymbolicLink()) {
@@ -650,7 +779,30 @@ async function inspectWriteTarget(target: string, portablePath: string): Promise
     exists: true,
     mode: stats.mode & 0o7777,
     sha256: await sha256File(target, portablePath),
+    size: stats.size,
   };
+}
+
+async function readWholeFile(target: string, portablePath: string, size: number): Promise<Buffer> {
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_WRITE_BYTES) {
+    throw new FilesystemError('PATCH_TOO_LARGE', portablePath, `invalid patch source size`);
+  }
+  const handle = await open(target, 'r').catch((error) => {
+    throw mapFilesystemError(portablePath, error);
+  });
+  try {
+    const data = await handle.readFile();
+    if (data.byteLength > MAX_WRITE_BYTES) {
+      throw new FilesystemError(
+        'PATCH_TOO_LARGE',
+        portablePath,
+        `patch source exceeds ${MAX_WRITE_BYTES} bytes: ${portablePath}`,
+      );
+    }
+    return data;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function sha256File(target: string, portablePath: string): Promise<string> {
@@ -688,6 +840,153 @@ function normalizeExpectedSha256(value: string | null | undefined): string | nul
     );
   }
   return value.toLowerCase();
+}
+
+function normalizeRequiredSha256(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !/^[0-9a-fA-F]{64}$/.test(value)) {
+    throw new FilesystemError(
+      'INVALID_REQUEST',
+      null,
+      `${name} must be a 64-character hexadecimal SHA-256 digest`,
+    );
+  }
+  return value.toLowerCase();
+}
+
+function normalizePatchEdits(value: unknown): FilesystemPatchEdit[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_PATCH_EDITS) {
+    throw new FilesystemError(
+      'INVALID_REQUEST',
+      null,
+      `edits must contain between 1 and ${MAX_PATCH_EDITS} entries`,
+    );
+  }
+  return value.map((edit, index) => {
+    if (
+      typeof edit !== 'object' ||
+      edit === null ||
+      Array.isArray(edit) ||
+      !('oldText' in edit) ||
+      typeof edit.oldText !== 'string' ||
+      edit.oldText.length === 0 ||
+      edit.oldText.includes('\0') ||
+      !('newText' in edit) ||
+      typeof edit.newText !== 'string' ||
+      edit.newText.includes('\0')
+    ) {
+      throw new FilesystemError(
+        'INVALID_REQUEST',
+        null,
+        `edits[${index}] must contain non-empty NUL-free oldText and NUL-free string newText`,
+      );
+    }
+    return { oldText: edit.oldText, newText: edit.newText };
+  });
+}
+
+interface PlannedPatchEdit extends FilesystemPatchEdit {
+  editIndex: number;
+  start: number;
+  end: number;
+}
+
+function planExactPatch(
+  source: string,
+  edits: FilesystemPatchEdit[],
+  path: string,
+): PlannedPatchEdit[] {
+  const planned = edits.map((edit, editIndex) => {
+    const matches = findAllOccurrences(source, edit.oldText);
+    if (matches.length === 0) {
+      throw new FilesystemError(
+        'PATCH_CONFLICT',
+        path,
+        `patch edit ${editIndex} expected text was not found in ${path}`,
+        {
+          details: { reason: 'expected_text_not_found', editIndex, matchCount: 0 },
+        },
+      );
+    }
+    if (matches.length > 1) {
+      throw new FilesystemError(
+        'PATCH_CONFLICT',
+        path,
+        `patch edit ${editIndex} is ambiguous in ${path}`,
+        {
+          details: { reason: 'ambiguous_match', editIndex, matchCount: matches.length },
+        },
+      );
+    }
+    const start = matches[0] ?? 0;
+    return { ...edit, editIndex, start, end: start + edit.oldText.length };
+  });
+
+  const ordered = [...planned].sort((left, right) => left.start - right.start);
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (previous !== undefined && current !== undefined && current.start < previous.end) {
+      throw new FilesystemError('PATCH_CONFLICT', path, `patch edits overlap in ${path}`, {
+        details: {
+          reason: 'overlapping_edits',
+          editIndex: current.editIndex,
+          conflictsWithEditIndex: previous.editIndex,
+        },
+      });
+    }
+  }
+  return ordered;
+}
+
+function findAllOccurrences(source: string, expected: string): number[] {
+  const matches: number[] = [];
+  let from = 0;
+  for (;;) {
+    const found = source.indexOf(expected, from);
+    if (found < 0) return matches;
+    matches.push(found);
+    from = found + 1;
+  }
+}
+
+function applyPlannedPatch(source: string, planned: PlannedPatchEdit[]): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const edit of planned) {
+    parts.push(source.slice(cursor, edit.start), edit.newText);
+    cursor = edit.end;
+  }
+  parts.push(source.slice(cursor));
+  return parts.join('');
+}
+
+function enforcePatchHashPrecondition(
+  expectedSha256: string,
+  current: WriteTargetState,
+  path: string,
+) {
+  if (!current.exists || current.sha256 !== expectedSha256) {
+    throw patchHashConflict(path, expectedSha256, current.sha256);
+  }
+}
+
+function patchHashConflict(
+  path: string,
+  expectedSha256: string,
+  actualSha256: string | null,
+): FilesystemError {
+  return new FilesystemError(
+    'PATCH_CONFLICT',
+    path,
+    `SHA-256 patch precondition failed for ${path}`,
+    {
+      details: {
+        reason: 'sha256_mismatch',
+        expectedSha256,
+        actualSha256,
+      },
+    },
+  );
 }
 
 function enforceWritePrecondition(

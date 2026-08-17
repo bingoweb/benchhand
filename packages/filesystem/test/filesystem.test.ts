@@ -22,7 +22,7 @@ import {
   parseEntityVersion,
   type WorkspaceId,
   type WorkspaceRecord,
-} from '@udmcp/contracts';
+} from '@benchhand/contracts';
 
 import { FilesystemError, FilesystemService } from '../src/index.js';
 
@@ -68,7 +68,7 @@ function sha256(content: string | Buffer): string {
 }
 
 test('reads a bounded byte range without loading or returning bytes beyond the request', async () => {
-  const dir = tempDir('udmcp-filesystem-read-');
+  const dir = tempDir('benchhand-filesystem-read-');
   writeFileSync(join(dir, 'hello.txt'), 'hello\nworld\n');
 
   try {
@@ -105,7 +105,7 @@ test('reads a bounded byte range without loading or returning bytes beyond the r
 });
 
 test('classifies NUL-bearing and invalid UTF-8 ranges as binary without returning lossy text', async () => {
-  const dir = tempDir('udmcp-filesystem-binary-');
+  const dir = tempDir('benchhand-filesystem-binary-');
   writeFileSync(join(dir, 'nul.bin'), Buffer.from([0x41, 0x00, 0x42]));
   writeFileSync(join(dir, 'invalid.bin'), Buffer.from([0xc3, 0x28]));
 
@@ -128,7 +128,7 @@ test('classifies NUL-bearing and invalid UTF-8 ranges as binary without returnin
 test('rejects lexical traversal and a symlink that escapes the canonical workspace root', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = tempDir('udmcp-filesystem-escape-');
+  const dir = tempDir('benchhand-filesystem-escape-');
   const root = join(dir, 'root');
   const outside = join(dir, 'outside.txt');
   mkdirSync(root);
@@ -151,7 +151,7 @@ test('rejects lexical traversal and a symlink that escapes the canonical workspa
 });
 
 test('lists directory entries in deterministic order with opaque cursor pagination', async () => {
-  const dir = tempDir('udmcp-filesystem-list-');
+  const dir = tempDir('benchhand-filesystem-list-');
   for (const name of ['c.txt', 'a.txt', 'b.txt']) writeFileSync(join(dir, name), name);
   mkdirSync(join(dir, 'dir'));
 
@@ -191,7 +191,7 @@ test('lists directory entries in deterministic order with opaque cursor paginati
 });
 
 test('search combines glob and literal text matching with deterministic bounded results', async () => {
-  const dir = tempDir('udmcp-filesystem-search-');
+  const dir = tempDir('benchhand-filesystem-search-');
   mkdirSync(join(dir, 'src', 'nested'), { recursive: true });
   writeFileSync(join(dir, 'src', 'b.ts'), 'first\nneedle beta\n');
   writeFileSync(join(dir, 'src', 'a.ts'), 'needle alpha\nsecond\nneedle again\n');
@@ -233,7 +233,7 @@ test('search combines glob and literal text matching with deterministic bounded 
 test('does not traverse symlink directories during search', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = tempDir('udmcp-filesystem-search-symlink-');
+  const dir = tempDir('benchhand-filesystem-search-symlink-');
   const root = join(dir, 'root');
   const outside = join(dir, 'outside');
   mkdirSync(root);
@@ -262,7 +262,7 @@ test('fails closed for unknown or unavailable durable workspaces before filesyst
     (error: unknown) => error instanceof FilesystemError && error.code === 'WORKSPACE_NOT_FOUND',
   );
 
-  const dir = tempDir('udmcp-filesystem-unavailable-');
+  const dir = tempDir('benchhand-filesystem-unavailable-');
   try {
     const missing = await workspaceRecord(dir, { status: 'missing' });
     await assert.rejects(
@@ -276,7 +276,7 @@ test('fails closed for unknown or unavailable durable workspaces before filesyst
 });
 
 test('atomically replaces a regular file with a matching hash precondition and preserves mode', async () => {
-  const dir = tempDir('udmcp-filesystem-write-replace-');
+  const dir = tempDir('benchhand-filesystem-write-replace-');
   const path = join(dir, 'config.txt');
   writeFileSync(path, 'before\n');
   chmodSync(path, 0o640);
@@ -301,7 +301,7 @@ test('atomically replaces a regular file with a matching hash precondition and p
       durability: 'file-and-directory',
     });
     assert.deepEqual(
-      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
       [],
     );
   } finally {
@@ -310,7 +310,7 @@ test('atomically replaces a regular file with a matching hash precondition and p
 });
 
 test('hash conflict leaves the final file byte-identical and cleans the temp file', async () => {
-  const dir = tempDir('udmcp-filesystem-write-conflict-');
+  const dir = tempDir('benchhand-filesystem-write-conflict-');
   const path = join(dir, 'config.txt');
   writeFileSync(path, 'current\n');
 
@@ -328,7 +328,7 @@ test('hash conflict leaves the final file byte-identical and cleans the temp fil
     );
     assert.equal(readFileSync(path, 'utf8'), 'current\n');
     assert.deepEqual(
-      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
       [],
     );
   } finally {
@@ -337,7 +337,7 @@ test('hash conflict leaves the final file byte-identical and cleans the temp fil
 });
 
 test('null hash is create-only and never overwrites an existing target', async () => {
-  const dir = tempDir('udmcp-filesystem-write-create-');
+  const dir = tempDir('benchhand-filesystem-write-create-');
   try {
     const service = serviceFor(await workspaceRecord(dir));
     const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
@@ -367,7 +367,7 @@ test('null hash is create-only and never overwrites an existing target', async (
 });
 
 test('serializes concurrent writes so one stale precondition loses without partial output', async () => {
-  const dir = tempDir('udmcp-filesystem-write-concurrent-');
+  const dir = tempDir('benchhand-filesystem-write-concurrent-');
   const path = join(dir, 'shared.txt');
   writeFileSync(path, 'base\n');
 
@@ -390,7 +390,7 @@ test('serializes concurrent writes so one stale precondition loses without parti
     );
     assert.equal(['left\n', 'right\n'].includes(readFileSync(path, 'utf8')), true);
     assert.deepEqual(
-      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
       [],
     );
   } finally {
@@ -401,7 +401,7 @@ test('serializes concurrent writes so one stale precondition loses without parti
 test('write rejects symlink targets and parent symlink escape before creating temp files', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = tempDir('udmcp-filesystem-write-symlink-');
+  const dir = tempDir('benchhand-filesystem-write-symlink-');
   const root = join(dir, 'root');
   const outside = join(dir, 'outside');
   mkdirSync(root);
@@ -431,7 +431,7 @@ test('write rejects symlink targets and parent symlink escape before creating te
 });
 
 test('rename failure leaves the final file unchanged and removes the staged temp file', async () => {
-  const dir = tempDir('udmcp-filesystem-write-rename-failure-');
+  const dir = tempDir('benchhand-filesystem-write-rename-failure-');
   const path = join(dir, 'config.txt');
   writeFileSync(path, 'stable\n');
 
@@ -455,7 +455,7 @@ test('rename failure leaves the final file unchanged and removes the staged temp
     );
     assert.equal(readFileSync(path, 'utf8'), 'stable\n');
     assert.deepEqual(
-      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
       [],
     );
   } finally {
@@ -464,7 +464,7 @@ test('rename failure leaves the final file unchanged and removes the staged temp
 });
 
 test('reports file-only durability after a committed rename when directory sync is unavailable', async () => {
-  const dir = tempDir('udmcp-filesystem-write-dir-sync-');
+  const dir = tempDir('benchhand-filesystem-write-dir-sync-');
   const path = join(dir, 'config.txt');
   writeFileSync(path, 'before\n');
 
@@ -489,7 +489,7 @@ test('reports file-only durability after a committed rename when directory sync 
 });
 
 test('create-only commit never overwrites a target that appears after the precondition check', async () => {
-  const dir = tempDir('udmcp-filesystem-write-create-race-');
+  const dir = tempDir('benchhand-filesystem-write-create-race-');
   const path = join(dir, 'new.txt');
 
   try {
@@ -505,16 +505,341 @@ test('create-only commit never overwrites a target that appears after the precon
         service.write({
           workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
           path: 'new.txt',
-          content: 'udmcp-loser\n',
+          content: 'benchhand-loser\n',
           expectedSha256: null,
         }),
       (error: unknown) => error instanceof FilesystemError && error.code === 'WRITE_CONFLICT',
     );
     assert.equal(readFileSync(path, 'utf8'), 'external-winner\n');
     assert.deepEqual(
-      readdirSync(dir).filter((name) => name.includes('.udmcp-write-')),
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
       [],
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch applies multiple exact non-overlapping edits against one hashed source snapshot', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-exact-');
+  const path = join(dir, 'config.txt');
+  const before = 'alpha = 1\nbeta = 2\ngamma = 3\n';
+  const after = 'alpha = 10\nbeta = 2\ngamma = 30\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const result = await service.patch({
+      workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+      path: 'config.txt',
+      expectedSha256: sha256(before),
+      edits: [
+        { oldText: 'alpha = 1', newText: 'alpha = 10' },
+        { oldText: 'gamma = 3', newText: 'gamma = 30' },
+      ],
+    });
+
+    assert.equal(readFileSync(path, 'utf8'), after);
+    assert.deepEqual(result, {
+      path: 'config.txt',
+      previousSha256: sha256(before),
+      sha256: sha256(after),
+      editsApplied: 2,
+      bytesWritten: Buffer.byteLength(after),
+      durability: 'file-and-directory',
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch stale hash fails closed with structured evidence and leaves the file byte-identical', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-stale-');
+  const path = join(dir, 'config.txt');
+  const current = 'current\n';
+  writeFileSync(path, current);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'config.txt',
+          expectedSha256: sha256('stale\n'),
+          edits: [{ oldText: 'stale', newText: 'replacement' }],
+        }),
+      (error: unknown) => {
+        if (!(error instanceof FilesystemError) || error.code !== 'PATCH_CONFLICT') return false;
+        assert.deepEqual((error as FilesystemError & { details?: unknown }).details, {
+          reason: 'sha256_mismatch',
+          expectedSha256: sha256('stale\n'),
+          actualSha256: sha256(current),
+        });
+        return true;
+      },
+    );
+    assert.equal(readFileSync(path, 'utf8'), current);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch rejects ambiguous expected text instead of guessing which occurrence to mutate', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-ambiguous-');
+  const path = join(dir, 'config.txt');
+  const before = 'same\nmiddle\nsame\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'config.txt',
+          expectedSha256: sha256(before),
+          edits: [{ oldText: 'same', newText: 'changed' }],
+        }),
+      (error: unknown) => {
+        if (!(error instanceof FilesystemError) || error.code !== 'PATCH_CONFLICT') return false;
+        assert.deepEqual((error as FilesystemError & { details?: unknown }).details, {
+          reason: 'ambiguous_match',
+          editIndex: 0,
+          matchCount: 2,
+        });
+        return true;
+      },
+    );
+    assert.equal(readFileSync(path, 'utf8'), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch rejects missing expected text and overlapping edit spans without partial mutation', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-conflicts-');
+  const path = join(dir, 'config.txt');
+  const before = 'abcdef\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId,
+          path: 'config.txt',
+          expectedSha256: sha256(before),
+          edits: [{ oldText: 'missing', newText: 'replacement' }],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError &&
+        error.code === 'PATCH_CONFLICT' &&
+        JSON.stringify((error as FilesystemError & { details?: unknown }).details) ===
+          JSON.stringify({ reason: 'expected_text_not_found', editIndex: 0, matchCount: 0 }),
+    );
+    assert.equal(readFileSync(path, 'utf8'), before);
+
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId,
+          path: 'config.txt',
+          expectedSha256: sha256(before),
+          edits: [
+            { oldText: 'abcd', newText: 'ABCD' },
+            { oldText: 'cdef', newText: 'CDEF' },
+          ],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError &&
+        error.code === 'PATCH_CONFLICT' &&
+        JSON.stringify((error as FilesystemError & { details?: unknown }).details) ===
+          JSON.stringify({ reason: 'overlapping_edits', editIndex: 1, conflictsWithEditIndex: 0 }),
+    );
+    assert.equal(readFileSync(path, 'utf8'), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('concurrent patches with one expected hash allow exactly one commit', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-concurrent-');
+  const path = join(dir, 'shared.txt');
+  const before = 'value=base\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+    const expectedSha256 = sha256(before);
+    const results = await Promise.allSettled([
+      service.patch({
+        workspaceId,
+        path: 'shared.txt',
+        expectedSha256,
+        edits: [{ oldText: 'value=base', newText: 'value=left' }],
+      }),
+      service.patch({
+        workspaceId,
+        path: 'shared.txt',
+        expectedSha256,
+        edits: [{ oldText: 'value=base', newText: 'value=right' }],
+      }),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    assert.equal(
+      rejected?.status === 'rejected' &&
+        rejected.reason instanceof FilesystemError &&
+        rejected.reason.code === 'PATCH_CONFLICT',
+      true,
+    );
+    assert.equal(['value=left\n', 'value=right\n'].includes(readFileSync(path, 'utf8')), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch rejects binary source content before attempting any mutation', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-binary-');
+  const path = join(dir, 'binary.bin');
+  const before = Buffer.from([0x41, 0x00, 0x42]);
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir));
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'binary.bin',
+          expectedSha256: sha256(before),
+          edits: [{ oldText: 'A', newText: 'B' }],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATCH_BINARY_UNSUPPORTED',
+    );
+    assert.deepEqual(readFileSync(path), before);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch maps an atomic commit failure to PATCH_FAILED and leaves no partial output or staging file', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-rename-failure-');
+  const path = join(dir, 'config.txt');
+  const before = 'before\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir), {
+      renameFile: async () => {
+        const error = new Error('fixture patch rename failure') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      },
+    });
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+          path: 'config.txt',
+          expectedSha256: sha256(before),
+          edits: [{ oldText: 'before', newText: 'after' }],
+        }),
+      (error: unknown) => error instanceof FilesystemError && error.code === 'PATCH_FAILED',
+    );
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
+      [],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch rejects symlink targets parent symlink escapes and lexical traversal', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const dir = tempDir('benchhand-filesystem-patch-symlink-');
+  const root = join(dir, 'root');
+  const outside = join(dir, 'outside');
+  mkdirSync(root);
+  mkdirSync(outside);
+  const outsideFile = join(outside, 'secret.txt');
+  writeFileSync(outsideFile, 'secret\n');
+  symlinkSync(outsideFile, join(root, 'file-link'));
+  symlinkSync(outside, join(root, 'dir-link'));
+
+  try {
+    const service = serviceFor(await workspaceRecord(root));
+    const workspaceId = parseEntityId('workspace', 'ws_filesystem_fixture');
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId,
+          path: 'file-link',
+          expectedSha256: sha256('secret\n'),
+          edits: [{ oldText: 'secret', newText: 'changed' }],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATH_SYMLINK_UNSUPPORTED',
+    );
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId,
+          path: 'dir-link/secret.txt',
+          expectedSha256: sha256('secret\n'),
+          edits: [{ oldText: 'secret', newText: 'changed' }],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATH_OUTSIDE_WORKSPACE',
+    );
+    await assert.rejects(
+      () =>
+        service.patch({
+          workspaceId,
+          path: '../outside/secret.txt',
+          expectedSha256: sha256('secret\n'),
+          edits: [{ oldText: 'secret', newText: 'changed' }],
+        }),
+      (error: unknown) =>
+        error instanceof FilesystemError && error.code === 'PATH_OUTSIDE_WORKSPACE',
+    );
+    assert.equal(readFileSync(outsideFile, 'utf8'), 'secret\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('patch reports file-only durability instead of a false failure after commit when directory sync fails', async () => {
+  const dir = tempDir('benchhand-filesystem-patch-dir-sync-');
+  const path = join(dir, 'config.txt');
+  const before = 'before\n';
+  writeFileSync(path, before);
+
+  try {
+    const service = serviceFor(await workspaceRecord(dir), {
+      syncDirectory: async () => {
+        throw new Error('fixture patch directory sync failure after commit');
+      },
+    });
+    const result = await service.patch({
+      workspaceId: parseEntityId('workspace', 'ws_filesystem_fixture'),
+      path: 'config.txt',
+      expectedSha256: sha256(before),
+      edits: [{ oldText: 'before', newText: 'after' }],
+    });
+    assert.equal(readFileSync(path, 'utf8'), 'after\n');
+    assert.equal(result.durability, 'file-only');
+    assert.equal(result.sha256, sha256('after\n'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

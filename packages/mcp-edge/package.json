@@ -1,7 +1,8 @@
 {
-  "name": "@udmcp/mcp-edge",
+  "name": "@benchhand/mcp-edge",
   "version": "0.0.0-dev",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -13,12 +14,12 @@
   "dependencies": {
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@udmcp/contracts": "0.0.0-dev",
-    "@udmcp/local-rpc": "0.0.0-dev",
+    "@benchhand/contracts": "0.0.0-dev",
+    "@benchhand/local-rpc": "0.0.0-dev",
     "zod": "4.2.1"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
-    "@udmcp/daemon": "0.0.0-dev"
+    "@benchhand/daemon": "0.0.0-dev"
   }
 }

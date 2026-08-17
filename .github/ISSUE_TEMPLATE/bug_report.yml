@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible Benchhand defect
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Reproduction beats drama. If the bug can mutate data incorrectly, please make that obvious.
+
+  - type: input
+    id: version
+    attributes:
+      label: Benchhand version or commit
+      placeholder: 0.x.y or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Node version and any relevant MCP client/version
+      placeholder: Node 22.x, MCP Inspector 2.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include exact commands, inputs, or tool calls when possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or other evidence
+      description: Remove secrets before posting.
+      render: shell
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed passwords, tokens, private keys, and other secrets from this report.
+          required: true
+        - label: This is not a private security vulnerability report. If it is, I will use the security reporting process instead.
+          required: true

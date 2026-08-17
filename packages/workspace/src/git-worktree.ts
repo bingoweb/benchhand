@@ -58,7 +58,7 @@ export async function createLockedWorktree(options: {
       'add',
       '--lock',
       '--reason',
-      `udmcp:${options.ownershipKey}`,
+      `benchhand:${options.ownershipKey}`,
       '-b',
       options.branch,
       options.worktreePath,

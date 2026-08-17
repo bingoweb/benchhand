@@ -1,8 +1,8 @@
 import net from 'node:net';
 
-const socketPath = process.env.UDMCP_TEST_SOCKET;
+const socketPath = process.env.BENCHHAND_TEST_SOCKET;
 if (socketPath === undefined) {
-  throw new Error('UDMCP_TEST_SOCKET is required');
+  throw new Error('BENCHHAND_TEST_SOCKET is required');
 }
 
 const server = net.createServer();

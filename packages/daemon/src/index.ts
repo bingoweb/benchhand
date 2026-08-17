@@ -13,11 +13,11 @@ import {
   RPC_SCHEMA_VERSION,
   type RpcError,
   type RpcRequest,
-} from '@udmcp/contracts';
-import { FilesystemError, FilesystemService } from '@udmcp/filesystem';
-import { OperationJournal } from '@udmcp/operations';
-import { openSqliteDatabase, type SqliteDatabase } from '@udmcp/storage';
-import { WorkspaceRegistry, WorkspaceRegistryError } from '@udmcp/workspace';
+} from '@benchhand/contracts';
+import { FilesystemError, FilesystemService } from '@benchhand/filesystem';
+import { OperationJournal } from '@benchhand/operations';
+import { openSqliteDatabase, type SqliteDatabase } from '@benchhand/storage';
+import { WorkspaceRegistry, WorkspaceRegistryError } from '@benchhand/workspace';
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -371,6 +371,10 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
       return dispatchFilesystem(() =>
         context.filesystem.write(readFileWriteParams(request.params)),
       );
+    case 'file.patch':
+      return dispatchFilesystem(() =>
+        context.filesystem.patch(readFilePatchParams(request.params)),
+      );
     default:
       throw new DispatchError({
         code: 'METHOD_NOT_FOUND',
@@ -385,11 +389,12 @@ async function dispatchFilesystem(operation: () => Promise<unknown>): Promise<Js
     return (await operation()) as JsonValue;
   } catch (error) {
     if (error instanceof FilesystemError) {
+      const details = mergeFilesystemErrorDetails(error);
       throw new DispatchError({
         code: error.code,
         message: error.message,
         retryable: error.code === 'PATH_INACCESSIBLE',
-        ...(error.path === null ? {} : { details: { path: error.path } }),
+        ...(details === undefined ? {} : { details }),
       });
     }
     throw error;
@@ -453,6 +458,57 @@ function readFileWriteParams(params: unknown) {
   return expectedSha256 === undefined
     ? { workspaceId, path, content }
     : { workspaceId, path, content, expectedSha256 };
+}
+
+function readFilePatchParams(params: unknown) {
+  const value = readParamsObject(params, 'file.patch');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'file.patch');
+  const path = readRequiredString(value.path, 'file.patch params.path');
+  const expectedSha256 = readRequiredString(
+    value.expectedSha256,
+    'file.patch params.expectedSha256',
+  );
+  if (!Array.isArray(value.edits)) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'file.patch params.edits must be an array',
+      retryable: false,
+    });
+  }
+  const edits = value.edits.map((edit, index) => {
+    if (
+      typeof edit !== 'object' ||
+      edit === null ||
+      Array.isArray(edit) ||
+      !('oldText' in edit) ||
+      typeof edit.oldText !== 'string' ||
+      !('newText' in edit) ||
+      typeof edit.newText !== 'string'
+    ) {
+      throw new DispatchError({
+        code: 'INVALID_REQUEST',
+        message: `file.patch params.edits[${index}] must contain string oldText and newText`,
+        retryable: false,
+      });
+    }
+    return { oldText: edit.oldText, newText: edit.newText };
+  });
+  return { workspaceId, path, expectedSha256, edits };
+}
+
+function mergeFilesystemErrorDetails(error: FilesystemError): JsonValue | undefined {
+  if (error.path === null) return error.details;
+  if (
+    typeof error.details === 'object' &&
+    error.details !== null &&
+    !Array.isArray(error.details)
+  ) {
+    return { path: error.path, ...error.details };
+  }
+  if (error.details !== undefined) {
+    return { path: error.path, evidence: error.details };
+  }
+  return { path: error.path };
 }
 
 function readParamsObject(params: unknown, method: string): Record<string, unknown> {

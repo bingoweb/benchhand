@@ -191,7 +191,7 @@ test('workspace record is a closed durable wire contract', () => {
       canonicalPath: '/state/worktrees/fixture',
       worktreePath: '/state/worktrees/fixture',
       baseRef: '0123456789abcdef0123456789abcdef01234567',
-      branch: 'udmcp/fixture',
+      branch: 'benchhand/fixture',
     }),
     {
       ...record,
@@ -199,7 +199,7 @@ test('workspace record is a closed durable wire contract', () => {
       canonicalPath: '/state/worktrees/fixture',
       worktreePath: '/state/worktrees/fixture',
       baseRef: '0123456789abcdef0123456789abcdef01234567',
-      branch: 'udmcp/fixture',
+      branch: 'benchhand/fixture',
     },
   );
   assert.throws(

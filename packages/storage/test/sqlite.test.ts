@@ -7,7 +7,7 @@ import test from 'node:test';
 import { openSqliteDatabase } from '../src/index.js';
 
 function withTempDatabase<T>(run: (path: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), 'udmcp-storage-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-storage-test-'));
   try {
     return run(join(dir, 'state.sqlite'));
   } finally {

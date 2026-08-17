@@ -7,7 +7,7 @@ import {
   RPC_SCHEMA_VERSION,
   type RpcError,
   type RpcRequest,
-} from '@udmcp/contracts';
+} from '@benchhand/contracts';
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 

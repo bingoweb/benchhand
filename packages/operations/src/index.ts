@@ -7,8 +7,8 @@ import {
   parseEntityVersion,
   parseOperationState,
   parseResultEnvelope,
-} from '@udmcp/contracts';
-import type { SqliteDatabase } from '@udmcp/storage';
+} from '@benchhand/contracts';
+import type { SqliteDatabase } from '@benchhand/storage';
 
 const OPERATION_JOURNAL_MIGRATION = {
   id: '0001-operation-journal',

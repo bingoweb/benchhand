@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { openSqliteDatabase } from '@udmcp/storage';
+import { openSqliteDatabase } from '@benchhand/storage';
 
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../src/index.js';
 
@@ -34,8 +34,8 @@ function createRepository(root: string): string {
   const repo = join(root, 'repo');
   mkdirSync(repo);
   git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.name', 'UDMCP Test']);
-  git(repo, ['config', 'user.email', 'udmcp-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'Benchhand Test']);
+  git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);
@@ -54,7 +54,7 @@ function expectedOwnershipKey(repo: string, baseCommit: string): string {
 }
 
 test('creates and deterministically reuses a managed worktree without touching dirty main checkout', async () => {
-  const dir = tempDir('udmcp-managed-worktree-');
+  const dir = tempDir('benchhand-managed-worktree-');
   const repo = createRepository(dir);
   const worktreeRoot = join(dir, 'managed');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -77,7 +77,7 @@ test('creates and deterministically reuses a managed worktree without touching d
     assert.equal(opened.repoRoot, await realpath(repo));
     assert.equal(opened.worktreePath, opened.canonicalPath);
     assert.match(opened.baseRef ?? '', /^[0-9a-f]{40,64}$/);
-    assert.match(opened.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+    assert.match(opened.branch ?? '', /^benchhand\/[0-9a-f]{20}$/);
     assert.equal(opened.ownerInstance, 'daemon_worktree');
     assert.equal(readFileSync(join(opened.canonicalPath, 'tracked.txt'), 'utf8'), 'committed\n');
 
@@ -106,7 +106,7 @@ test('creates and deterministically reuses a managed worktree without touching d
 });
 
 test('resolves symbolic base refs to immutable commits and creates a new ownership after HEAD moves', async () => {
-  const dir = tempDir('udmcp-worktree-base-ref-');
+  const dir = tempDir('benchhand-worktree-base-ref-');
   const repo = createRepository(dir);
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
 
@@ -131,7 +131,7 @@ test('resolves symbolic base refs to immutable commits and creates a new ownersh
 });
 
 test('reuses a managed worktree across registry restart and transfers owner metadata', async () => {
-  const dir = tempDir('udmcp-worktree-restart-');
+  const dir = tempDir('benchhand-worktree-restart-');
   const repo = createRepository(dir);
   const databasePath = join(dir, 'state.sqlite');
   const worktreeRoot = join(dir, 'managed');
@@ -166,7 +166,7 @@ test('reuses a managed worktree across registry restart and transfers owner meta
 });
 
 test('rejects invalid worktree requests without mutating a foreign occupied managed path', async () => {
-  const dir = tempDir('udmcp-worktree-errors-');
+  const dir = tempDir('benchhand-worktree-errors-');
   const repo = createRepository(dir);
   const nonRepo = join(dir, 'not-a-repo');
   const worktreeRoot = join(dir, 'managed');
@@ -212,8 +212,8 @@ test('rejects invalid worktree requests without mutating a foreign occupied mana
   }
 });
 
-test('reconciles a UDMCP-owned worktree created before durable registry finalization', async () => {
-  const dir = tempDir('udmcp-worktree-reconcile-create-');
+test('reconciles a Benchhand-owned worktree created before durable registry finalization', async () => {
+  const dir = tempDir('benchhand-worktree-reconcile-create-');
   const repo = createRepository(dir);
   const worktreeRoot = join(dir, 'managed');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -224,7 +224,7 @@ test('reconciles a UDMCP-owned worktree created before durable registry finaliza
     const head = git(repo, ['rev-parse', 'HEAD']).trim();
     const ownershipKey = expectedOwnershipKey(repoRoot, head);
     const worktreePath = join(worktreeRoot, ownershipKey);
-    const branch = `udmcp/${ownershipKey}`;
+    const branch = `benchhand/${ownershipKey}`;
     mkdirSync(worktreeRoot, { recursive: true });
 
     db.run(
@@ -252,7 +252,7 @@ test('reconciles a UDMCP-owned worktree created before durable registry finaliza
       'add',
       '--lock',
       '--reason',
-      `udmcp:${ownershipKey}`,
+      `benchhand:${ownershipKey}`,
       '-b',
       branch,
       worktreePath,
@@ -281,7 +281,7 @@ test('reconciles a UDMCP-owned worktree created before durable registry finaliza
 });
 
 test('marks a missing managed worktree cleanup-required instead of blindly recreating it', async () => {
-  const dir = tempDir('udmcp-worktree-missing-managed-');
+  const dir = tempDir('benchhand-worktree-missing-managed-');
   const repo = createRepository(dir);
   const worktreeRoot = join(dir, 'managed');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -319,7 +319,7 @@ test('marks a missing managed worktree cleanup-required instead of blindly recre
 });
 
 test('coalesces concurrent worktree opens from independent registry connections', async () => {
-  const dir = tempDir('udmcp-worktree-concurrent-');
+  const dir = tempDir('benchhand-worktree-concurrent-');
   const repo = createRepository(dir);
   const databasePath = join(dir, 'state.sqlite');
   const worktreeRoot = join(dir, 'managed');
@@ -355,9 +355,9 @@ test('coalesces concurrent worktree opens from independent registry connections'
 });
 
 test('rejects a managed worktree root inside the source repository before touching the dirty checkout', async () => {
-  const dir = tempDir('udmcp-worktree-root-conflict-');
+  const dir = tempDir('benchhand-worktree-root-conflict-');
   const repo = createRepository(dir);
-  const worktreeRoot = join(repo, '.udmcp-worktrees');
+  const worktreeRoot = join(repo, '.benchhand-worktrees');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
   writeFileSync(join(repo, 'tracked.txt'), 'dirty-main\n');
   writeFileSync(join(repo, 'untracked.txt'), 'leave-me\n');
@@ -378,8 +378,8 @@ test('rejects a managed worktree root inside the source repository before touchi
   }
 });
 
-test('blocks an orphaned UDMCP branch from a partial create instead of resetting or reusing it blindly', async () => {
-  const dir = tempDir('udmcp-worktree-orphan-branch-');
+test('blocks an orphaned Benchhand branch from a partial create instead of resetting or reusing it blindly', async () => {
+  const dir = tempDir('benchhand-worktree-orphan-branch-');
   const repo = createRepository(dir);
   const worktreeRoot = join(dir, 'managed');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -390,7 +390,7 @@ test('blocks an orphaned UDMCP branch from a partial create instead of resetting
     const head = git(repo, ['rev-parse', 'HEAD']).trim();
     const ownershipKey = expectedOwnershipKey(repoRoot, head);
     const worktreePath = join(worktreeRoot, ownershipKey);
-    const branch = `udmcp/${ownershipKey}`;
+    const branch = `benchhand/${ownershipKey}`;
 
     db.run(
       `
@@ -438,7 +438,7 @@ test('blocks an orphaned UDMCP branch from a partial create instead of resetting
 });
 
 test('treats a deterministic branch collision without durable ownership evidence as foreign', async () => {
-  const dir = tempDir('udmcp-worktree-foreign-branch-');
+  const dir = tempDir('benchhand-worktree-foreign-branch-');
   const repo = createRepository(dir);
   const worktreeRoot = join(dir, 'managed');
   const db = openSqliteDatabase(join(dir, 'state.sqlite'));
@@ -448,7 +448,7 @@ test('treats a deterministic branch collision without durable ownership evidence
     const repoRoot = await realpath(repo);
     const head = git(repo, ['rev-parse', 'HEAD']).trim();
     const ownershipKey = expectedOwnershipKey(repoRoot, head);
-    const branch = `udmcp/${ownershipKey}`;
+    const branch = `benchhand/${ownershipKey}`;
     git(repo, ['branch', branch, head]);
 
     await assert.rejects(

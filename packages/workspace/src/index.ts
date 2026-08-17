@@ -10,8 +10,8 @@ import {
   type WorkspaceMode,
   type WorkspaceRecord,
   type WorkspaceStatus,
-} from '@udmcp/contracts';
-import type { SqliteDatabase } from '@udmcp/storage';
+} from '@benchhand/contracts';
+import type { SqliteDatabase } from '@benchhand/storage';
 
 import {
   createLockedWorktree,
@@ -416,7 +416,7 @@ export class WorkspaceRegistry {
 
     await mkdir(managedRoot, { recursive: true });
     const worktreePath = join(managedRoot, ownershipKey);
-    const branch = `udmcp/${ownershipKey}`;
+    const branch = `benchhand/${ownershipKey}`;
     const registration: ManagedWorktreeRegistration = {
       ownershipKey,
       absoluteRequestedPath,
@@ -548,7 +548,7 @@ export class WorkspaceRegistry {
       if (canonicalGitPath !== canonicalExpectedPath) continue;
       if (worktree.head?.toLowerCase() !== registration.baseCommit) continue;
       if (worktree.branch !== `refs/heads/${registration.branch}`) continue;
-      if (worktree.lockedReason !== `udmcp:${registration.ownershipKey}`) continue;
+      if (worktree.lockedReason !== `benchhand:${registration.ownershipKey}`) continue;
 
       return this.#registerManagedWorktree(registration, 'reconciled');
     }

@@ -9,16 +9,16 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseEntityId, parseWorkspaceRecord } from '@udmcp/contracts';
-import { createLocalRpcClient, RpcCallError } from '@udmcp/local-rpc';
-import { OperationJournal } from '@udmcp/operations';
-import { openSqliteDatabase } from '@udmcp/storage';
+import { parseEntityId, parseWorkspaceRecord } from '@benchhand/contracts';
+import { createLocalRpcClient, RpcCallError } from '@benchhand/local-rpc';
+import { OperationJournal } from '@benchhand/operations';
+import { openSqliteDatabase } from '@benchhand/storage';
 
 import { type DaemonHandle, DaemonStartError, startDaemon } from '../src/index.js';
 
 function ipcPath(dir: string, name: string): string {
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\udmcp-${name}-${process.pid}-${randomUUID()}`;
+    return `\\\\.\\pipe\\benchhand-${name}-${process.pid}-${randomUUID()}`;
   }
   return join(dir, `${name}.sock`);
 }
@@ -39,8 +39,8 @@ function createGitRepository(root: string): string {
   const repo = join(root, 'repo');
   mkdirSync(repo);
   git(repo, ['init', '-q', '-b', 'main']);
-  git(repo, ['config', 'user.name', 'UDMCP Test']);
-  git(repo, ['config', 'user.email', 'udmcp-test@example.invalid']);
+  git(repo, ['config', 'user.name', 'Benchhand Test']);
+  git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);
@@ -83,7 +83,7 @@ function rawRpc(socketPath: string, payload: unknown): Promise<unknown> {
 }
 
 test('health is ready only after durable state is initialized', async () => {
-  const dir = testTempDir('udmcp-daemon-health-test-');
+  const dir = testTempDir('benchhand-daemon-health-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'health');
 
@@ -114,7 +114,7 @@ test('health is ready only after durable state is initialized', async () => {
 });
 
 test('reports unsupported RPC schema versions with explicit negotiation details', async () => {
-  const dir = testTempDir('udmcp-daemon-schema-version-test-');
+  const dir = testTempDir('benchhand-daemon-schema-version-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'schema-version');
 
@@ -150,7 +150,7 @@ test('reports unsupported RPC schema versions with explicit negotiation details'
 });
 
 test('returns structured errors for unknown methods and missing durable handles', async () => {
-  const dir = testTempDir('udmcp-daemon-error-contract-test-');
+  const dir = testTempDir('benchhand-daemon-error-contract-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'error-contract');
 
@@ -191,7 +191,7 @@ test('returns structured errors for unknown methods and missing durable handles'
 });
 
 test('restart returns CORE_UNAVAILABLE while down and preserves a durable operation handle', async () => {
-  const dir = testTempDir('udmcp-daemon-restart-test-');
+  const dir = testTempDir('benchhand-daemon-restart-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'restart');
   const operationId = parseEntityId('operation', 'op_restart_handle');
@@ -258,7 +258,7 @@ test('restart returns CORE_UNAVAILABLE while down and preserves a durable operat
 });
 
 test('workspace RPC reuses the same durable handle across daemon restart', async () => {
-  const dir = testTempDir('udmcp-daemon-workspace-restart-test-');
+  const dir = testTempDir('benchhand-daemon-workspace-restart-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'workspace-restart');
   const project = join(dir, 'project');
@@ -314,7 +314,7 @@ test('workspace RPC reuses the same durable handle across daemon restart', async
 });
 
 test('workspace RPC creates and reuses worktree mode across daemon restart', async () => {
-  const dir = testTempDir('udmcp-daemon-worktree-restart-test-');
+  const dir = testTempDir('benchhand-daemon-worktree-restart-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'worktree-restart');
   const repo = createGitRepository(dir);
@@ -334,7 +334,7 @@ test('workspace RPC creates and reuses worktree mode across daemon restart', asy
     assert.equal(firstRecord.mode, 'worktree');
     assert.equal(firstRecord.worktreePath, firstRecord.canonicalPath);
     assert.match(firstRecord.baseRef ?? '', /^[0-9a-f]{40,64}$/);
-    assert.match(firstRecord.branch ?? '', /^udmcp\/[0-9a-f]{20}$/);
+    assert.match(firstRecord.branch ?? '', /^benchhand\/[0-9a-f]{20}$/);
     await first.close();
 
     second = await startDaemon({ databasePath, socketPath });
@@ -357,7 +357,7 @@ test('workspace RPC creates and reuses worktree mode across daemon restart', asy
 });
 
 test('workspace RPC preserves structured path and missing-handle errors', async () => {
-  const dir = testTempDir('udmcp-daemon-workspace-errors-test-');
+  const dir = testTempDir('benchhand-daemon-workspace-errors-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'workspace-errors');
 
@@ -397,7 +397,7 @@ test('workspace RPC preserves structured path and missing-handle errors', async 
 });
 
 test('filesystem RPC reads lists and searches only through an available durable workspace', async () => {
-  const dir = testTempDir('udmcp-daemon-filesystem-test-');
+  const dir = testTempDir('benchhand-daemon-filesystem-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'filesystem');
   const project = join(dir, 'project');
@@ -497,7 +497,7 @@ test('filesystem RPC reads lists and searches only through an available durable 
 });
 
 test('file.write RPC commits atomically and returns a structured stale-hash conflict', async () => {
-  const dir = testTempDir('udmcp-daemon-file-write-test-');
+  const dir = testTempDir('benchhand-daemon-file-write-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'file-write');
   const project = join(dir, 'project');
@@ -562,10 +562,228 @@ test('file.write RPC commits atomically and returns a structured stale-hash conf
   }
 });
 
+test('file.patch RPC applies exact edits and preserves structured conflict evidence', async () => {
+  const dir = testTempDir('benchhand-daemon-file-patch-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'file-patch');
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  const before = 'alpha = 1\nbeta = 2\nalpha = 1\n';
+  writeFileSync(join(project, 'config.txt'), before);
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_file_patch_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+
+      await assert.rejects(
+        () =>
+          client.call({
+            requestId: 'req_file_patch_ambiguous',
+            method: 'file.patch',
+            params: {
+              workspaceId: workspace.workspaceId,
+              path: 'config.txt',
+              expectedSha256: sha256(before),
+              edits: [{ oldText: 'alpha = 1', newText: 'alpha = 10' }],
+            },
+          }),
+        (error: unknown) => {
+          if (!(error instanceof RpcCallError) || error.code !== 'PATCH_CONFLICT') return false;
+          assert.equal(error.retryable, false);
+          assert.deepEqual(error.details, {
+            path: 'config.txt',
+            reason: 'ambiguous_match',
+            editIndex: 0,
+            matchCount: 2,
+          });
+          return true;
+        },
+      );
+      assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), before);
+
+      const exactBefore = 'alpha = 1\nbeta = 2\ngamma = 3\n';
+      writeFileSync(join(project, 'config.txt'), exactBefore);
+      const patched = await client.call({
+        requestId: 'req_file_patch_commit',
+        method: 'file.patch',
+        params: {
+          workspaceId: workspace.workspaceId,
+          path: 'config.txt',
+          expectedSha256: sha256(exactBefore),
+          edits: [
+            { oldText: 'alpha = 1', newText: 'alpha = 10' },
+            { oldText: 'gamma = 3', newText: 'gamma = 30' },
+          ],
+        },
+      });
+      const after = 'alpha = 10\nbeta = 2\ngamma = 30\n';
+      assert.deepEqual(patched, {
+        path: 'config.txt',
+        previousSha256: sha256(exactBefore),
+        sha256: sha256(after),
+        editsApplied: 2,
+        bytesWritten: Buffer.byteLength(after),
+        durability: 'file-and-directory',
+      });
+      assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('file.patch survives daemon restart through the same durable workspace handle and rejects replay', async () => {
+  const dir = testTempDir('benchhand-daemon-file-patch-restart-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'file-patch-restart');
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  const before = 'value = before\n';
+  const after = 'value = after\n';
+  writeFileSync(join(project, 'config.txt'), before);
+  let first: DaemonHandle | undefined;
+  let second: DaemonHandle | undefined;
+
+  try {
+    first = await startDaemon({ databasePath, socketPath });
+    const client = createLocalRpcClient({ socketPath });
+    const workspace = parseWorkspaceRecord(
+      await client.call({
+        requestId: 'req_patch_restart_workspace',
+        method: 'workspace.open',
+        params: { path: project },
+      }),
+    );
+    await first.close();
+    first = undefined;
+
+    second = await startDaemon({ databasePath, socketPath });
+    const patched = await client.call({
+      requestId: 'req_patch_after_restart',
+      method: 'file.patch',
+      params: {
+        workspaceId: workspace.workspaceId,
+        path: 'config.txt',
+        expectedSha256: sha256(before),
+        edits: [{ oldText: 'value = before', newText: 'value = after' }],
+      },
+    });
+    assert.equal(
+      typeof patched === 'object' && patched !== null && 'sha256' in patched
+        ? patched.sha256
+        : undefined,
+      sha256(after),
+    );
+    assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
+
+    await assert.rejects(
+      () =>
+        client.call({
+          requestId: 'req_patch_replay_after_restart',
+          method: 'file.patch',
+          params: {
+            workspaceId: workspace.workspaceId,
+            path: 'config.txt',
+            expectedSha256: sha256(before),
+            edits: [{ oldText: 'value = before', newText: 'value = replayed' }],
+          },
+        }),
+      (error: unknown) =>
+        error instanceof RpcCallError &&
+        error.code === 'PATCH_CONFLICT' &&
+        error.retryable === false &&
+        typeof error.details === 'object' &&
+        error.details !== null &&
+        !Array.isArray(error.details) &&
+        'reason' in error.details &&
+        error.details.reason === 'sha256_mismatch',
+    );
+    assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
+  } finally {
+    await second?.close();
+    await first?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('file.patch can resume from the same workspace handle after a real daemon SIGKILL', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const dir = testTempDir('benchhand-daemon-file-patch-sigkill-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'file-patch-sigkill');
+  const fixture = fileURLToPath(new URL('./fixtures/daemon-worker.ts', import.meta.url));
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  const before = 'hard = before\n';
+  const after = 'hard = after\n';
+  writeFileSync(join(project, 'config.txt'), before);
+
+  try {
+    const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
+      env: {
+        ...process.env,
+        BENCHHAND_TEST_DB: databasePath,
+        BENCHHAND_TEST_SOCKET: socketPath,
+      },
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    });
+    await once(child, 'message');
+    const client = createLocalRpcClient({ socketPath });
+    const workspace = parseWorkspaceRecord(
+      await client.call({
+        requestId: 'req_patch_sigkill_workspace',
+        method: 'workspace.open',
+        params: { path: project },
+      }),
+    );
+
+    child.kill('SIGKILL');
+    const [code, signal] = await once(child, 'exit');
+    assert.equal(code, null);
+    assert.equal(signal, 'SIGKILL');
+
+    const restarted = await startDaemon({ databasePath, socketPath });
+    try {
+      const patched = await client.call({
+        requestId: 'req_patch_after_sigkill',
+        method: 'file.patch',
+        params: {
+          workspaceId: workspace.workspaceId,
+          path: 'config.txt',
+          expectedSha256: sha256(before),
+          edits: [{ oldText: 'hard = before', newText: 'hard = after' }],
+        },
+      });
+      assert.equal(
+        typeof patched === 'object' && patched !== null && 'sha256' in patched
+          ? patched.sha256
+          : undefined,
+        sha256(after),
+      );
+      assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
+    } finally {
+      await restarted.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('recovers a stale Unix socket left by a SIGKILLed daemon without losing durable state', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = testTempDir('udmcp-daemon-crash-restart-test-');
+  const dir = testTempDir('benchhand-daemon-crash-restart-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'crash-restart');
   const fixture = fileURLToPath(new URL('./fixtures/daemon-worker.ts', import.meta.url));
@@ -574,8 +792,8 @@ test('recovers a stale Unix socket left by a SIGKILLed daemon without losing dur
     const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
       env: {
         ...process.env,
-        UDMCP_TEST_DB: databasePath,
-        UDMCP_TEST_SOCKET: socketPath,
+        BENCHHAND_TEST_DB: databasePath,
+        BENCHHAND_TEST_SOCKET: socketPath,
       },
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
@@ -608,7 +826,7 @@ test('recovers a stale Unix socket left by a SIGKILLed daemon without losing dur
 test('never unlinks a non-socket file that occupies the configured Unix IPC path', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = testTempDir('udmcp-daemon-path-safety-test-');
+  const dir = testTempDir('benchhand-daemon-path-safety-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'protected-file');
   writeFileSync(socketPath, 'do-not-delete');
@@ -628,7 +846,7 @@ test('never unlinks a non-socket file that occupies the configured Unix IPC path
 test('never steals an active Unix IPC endpoint from another daemon', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = testTempDir('udmcp-daemon-active-path-test-');
+  const dir = testTempDir('benchhand-daemon-active-path-test-');
   const firstDatabasePath = join(dir, 'first.sqlite');
   const secondDatabasePath = join(dir, 'second.sqlite');
   const socketPath = ipcPath(dir, 'active');
@@ -665,14 +883,14 @@ test('never steals an active Unix IPC endpoint from another daemon', {
 test('reclaims a genuinely stale Unix socket created by a crashed IPC owner', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = testTempDir('udmcp-daemon-stale-path-test-');
+  const dir = testTempDir('benchhand-daemon-stale-path-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = ipcPath(dir, 'stale');
   const fixture = fileURLToPath(new URL('./fixtures/stale-socket-worker.ts', import.meta.url));
 
   try {
     const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
-      env: { ...process.env, UDMCP_TEST_SOCKET: socketPath },
+      env: { ...process.env, BENCHHAND_TEST_SOCKET: socketPath },
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
     await once(child, 'message');
@@ -706,7 +924,7 @@ test('reclaims a genuinely stale Unix socket created by a crashed IPC owner', {
 test('rejects an overlong Unix socket path instead of allowing silent OS truncation', {
   skip: process.platform === 'win32',
 }, async () => {
-  const dir = testTempDir('udmcp-daemon-long-path-test-');
+  const dir = testTempDir('benchhand-daemon-long-path-test-');
   const databasePath = join(dir, 'state.sqlite');
   const socketPath = join(dir, `${'x'.repeat(160)}.sock`);
   let unexpectedDaemon: Awaited<ReturnType<typeof startDaemon>> | undefined;

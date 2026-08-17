@@ -1,7 +1,8 @@
 {
-  "name": "@udmcp/storage",
+  "name": "@benchhand/storage",
   "version": "0.0.0-dev",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

@@ -8,7 +8,7 @@ import test from 'node:test';
 import { createLocalRpcClient, RpcCallError } from '../src/index.js';
 
 function unavailableSocketPath(): { dir: string; socketPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'udmcp-rpc-client-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-rpc-client-test-'));
   return { dir, socketPath: join(dir, 'missing.sock') };
 }
 

@@ -56,6 +56,79 @@ export const OperationStateSchema = Type.Union(
 
 export type OperationState = Static<typeof OperationStateSchema>;
 
+export const RPC_SCHEMA_VERSION = 1 as const;
+
+export const RpcErrorSchema = Type.Object(
+  {
+    code: Type.String({ minLength: 1, maxLength: 128 }),
+    message: Type.String({ minLength: 1 }),
+    retryable: Type.Boolean(),
+    details: Type.Optional(Type.Unknown()),
+  },
+  { additionalProperties: false },
+);
+
+export type RpcError = Omit<Static<typeof RpcErrorSchema>, 'details'> & {
+  details?: JsonValue;
+};
+
+export const RpcRequestSchema = Type.Object(
+  {
+    schemaVersion: Type.Literal(RPC_SCHEMA_VERSION),
+    requestId: Type.String({ minLength: 1, maxLength: 128 }),
+    method: Type.String({ minLength: 1, maxLength: 128 }),
+    params: Type.Unknown(),
+    operationId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+    deadlineUnixMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  {
+    $schema: JSON_SCHEMA_2020_12,
+    additionalProperties: false,
+  },
+);
+
+export type RpcRequest = Omit<Static<typeof RpcRequestSchema>, 'params'> & {
+  params: JsonValue;
+};
+
+export const RpcSuccessResponseSchema = Type.Object(
+  {
+    schemaVersion: Type.Literal(RPC_SCHEMA_VERSION),
+    requestId: Type.String({ minLength: 1, maxLength: 128 }),
+    ok: Type.Literal(true),
+    result: Type.Unknown(),
+  },
+  { additionalProperties: false },
+);
+
+export const RpcFailureResponseSchema = Type.Object(
+  {
+    schemaVersion: Type.Literal(RPC_SCHEMA_VERSION),
+    requestId: Type.String({ minLength: 1, maxLength: 128 }),
+    ok: Type.Literal(false),
+    error: RpcErrorSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const RpcResponseSchema = Type.Union([RpcSuccessResponseSchema, RpcFailureResponseSchema], {
+  $schema: JSON_SCHEMA_2020_12,
+});
+
+export type RpcResponse =
+  | {
+      schemaVersion: typeof RPC_SCHEMA_VERSION;
+      requestId: string;
+      ok: true;
+      result: JsonValue;
+    }
+  | {
+      schemaVersion: typeof RPC_SCHEMA_VERSION;
+      requestId: string;
+      ok: false;
+      error: RpcError;
+    };
+
 export const EntityVersionSchema = Type.Integer({
   $schema: JSON_SCHEMA_2020_12,
   minimum: 0,
@@ -196,6 +269,14 @@ export function parseHealthState(value: unknown): HealthState {
 
 export function parseOperationState(value: unknown): OperationState {
   return parseSchema(OperationStateSchema, value, 'operation state');
+}
+
+export function parseRpcRequest(value: unknown): RpcRequest {
+  return parseSchema(RpcRequestSchema, value, 'rpc request') as RpcRequest;
+}
+
+export function parseRpcResponse(value: unknown): RpcResponse {
+  return parseSchema(RpcResponseSchema, value, 'rpc response') as RpcResponse;
 }
 
 export function parseEntityVersion(value: unknown): EntityVersion {

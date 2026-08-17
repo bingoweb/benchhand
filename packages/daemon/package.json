@@ -1,0 +1,19 @@
+{
+  "name": "@udmcp/daemon",
+  "version": "0.0.0-dev",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@udmcp/contracts": "0.0.0-dev",
+    "@udmcp/local-rpc": "0.0.0-dev",
+    "@udmcp/operations": "0.0.0-dev",
+    "@udmcp/storage": "0.0.0-dev"
+  }
+}

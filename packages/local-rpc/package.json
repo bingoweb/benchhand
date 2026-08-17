@@ -1,0 +1,16 @@
+{
+  "name": "@udmcp/local-rpc",
+  "version": "0.0.0-dev",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@udmcp/contracts": "0.0.0-dev"
+  }
+}

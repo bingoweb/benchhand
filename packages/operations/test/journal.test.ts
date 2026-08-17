@@ -60,6 +60,29 @@ test('replays a committed operation without running the effect twice', async () 
   });
 });
 
+test('reads a durable operation record by its stable handle', async () => {
+  await withJournal(async (journal) => {
+    const operationId = parseEntityId('operation', 'op_read_handle');
+    await journal.execute(
+      {
+        operationId,
+        kind: 'fixture.readable',
+        fingerprint: 'sha256:readable-v1',
+      },
+      () => ({ value: 42 }),
+    );
+
+    assert.deepEqual(journal.get(operationId), {
+      operationId,
+      kind: 'fixture.readable',
+      fingerprint: 'sha256:readable-v1',
+      state: 'committed',
+      version: 2,
+      result: { value: 42 },
+    });
+  });
+});
+
 test('rejects reusing an operation id for a different fingerprint', async () => {
   await withJournal(async (journal) => {
     const operationId = parseEntityId('operation', 'op_conflict');

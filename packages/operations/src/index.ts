@@ -182,6 +182,10 @@ export class OperationJournal {
     return result.changes;
   }
 
+  get(operationId: OperationId): OperationRecord | undefined {
+    return this.#read(operationId);
+  }
+
   async execute<Result extends JsonValue>(
     request: OperationRequest,
     effect: () => Promise<Result> | Result,

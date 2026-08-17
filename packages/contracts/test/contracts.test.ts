@@ -15,7 +15,12 @@ import {
   parseMutationMetadata,
   parseOperationState,
   parseResultEnvelope,
+  parseRpcRequest,
+  parseRpcResponse,
   ResultEnvelopeSchema,
+  RpcErrorSchema,
+  RpcRequestSchema,
+  RpcResponseSchema,
 } from '../src/contracts.js';
 
 test('result envelope survives a JSON serialization roundtrip', () => {
@@ -103,6 +108,60 @@ test('operation journal state is a closed durable contract', () => {
   assert.throws(() => parseOperationState('retry-it-probably'), /invalid operation state/i);
 });
 
+test('local RPC request requires explicit schema and request correlation', () => {
+  const request = {
+    schemaVersion: 1,
+    requestId: 'req_health_1',
+    method: 'system.health',
+    params: {},
+    deadlineUnixMs: Date.now() + 5_000,
+  };
+
+  assert.deepEqual(parseRpcRequest(request), request);
+  assert.throws(
+    () =>
+      parseRpcRequest({
+        schemaVersion: 2,
+        requestId: 'req_health_1',
+        method: 'system.health',
+        params: {},
+      }),
+    /invalid rpc request/i,
+  );
+  assert.throws(
+    () =>
+      parseRpcRequest({
+        schemaVersion: 1,
+        requestId: '',
+        method: 'system.health',
+        params: {},
+      }),
+    /invalid rpc request/i,
+  );
+});
+
+test('local RPC response preserves structured success and error envelopes', () => {
+  const success = {
+    schemaVersion: 1,
+    requestId: 'req_ok',
+    ok: true,
+    result: { ready: true },
+  };
+  const failure = {
+    schemaVersion: 1,
+    requestId: 'req_fail',
+    ok: false,
+    error: {
+      code: 'CORE_UNAVAILABLE',
+      message: 'daemon unavailable',
+      retryable: true,
+    },
+  };
+
+  assert.deepEqual(parseRpcResponse(success), success);
+  assert.deepEqual(parseRpcResponse(failure), failure);
+});
+
 test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () => {
   const ajv = new Ajv2020({ strict: true });
 
@@ -111,6 +170,9 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
   const validateCapability = ajv.compile(CapabilityDescriptorSchema);
   const validateMutation = ajv.compile(MutationMetadataSchema);
   const validateOperationState = ajv.compile(OperationStateSchema);
+  const validateRpcRequest = ajv.compile(RpcRequestSchema);
+  const validateRpcResponse = ajv.compile(RpcResponseSchema);
+  const validateRpcError = ajv.compile(RpcErrorSchema);
 
   assert.equal(validateResult({ ok: true, result: { value: 1 } }), true);
   assert.equal(validateResult({ ok: true, result: { value: 1 }, unexpected: true }), false);
@@ -137,4 +199,26 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
   );
   assert.equal(validateOperationState('committed'), true);
   assert.equal(validateOperationState('maybe'), false);
+  assert.equal(
+    validateRpcRequest({
+      schemaVersion: 1,
+      requestId: 'req_1',
+      method: 'system.health',
+      params: {},
+    }),
+    true,
+  );
+  assert.equal(
+    validateRpcResponse({
+      schemaVersion: 1,
+      requestId: 'req_1',
+      ok: true,
+      result: {},
+    }),
+    true,
+  );
+  assert.equal(
+    validateRpcError({ code: 'TIMEOUT', message: 'deadline exceeded', retryable: true }),
+    true,
+  );
 });

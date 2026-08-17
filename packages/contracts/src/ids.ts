@@ -1,6 +1,7 @@
 export type DurableEntityKind =
   | 'artifact'
   | 'operation'
+  | 'plugin'
   | 'plugin-instance'
   | 'process'
   | 'task'

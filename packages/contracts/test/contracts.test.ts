@@ -17,10 +17,14 @@ import {
   parseResultEnvelope,
   parseRpcRequest,
   parseRpcResponse,
+  parseWorkspaceRecord,
   ResultEnvelopeSchema,
   RpcErrorSchema,
   RpcRequestSchema,
   RpcResponseSchema,
+  WorkspaceModeSchema,
+  WorkspaceRecordSchema,
+  WorkspaceStatusSchema,
 } from '../src/contracts.js';
 
 test('result envelope survives a JSON serialization roundtrip', () => {
@@ -162,6 +166,34 @@ test('local RPC response preserves structured success and error envelopes', () =
   assert.deepEqual(parseRpcResponse(failure), failure);
 });
 
+test('workspace record is a closed durable wire contract', () => {
+  const record = {
+    workspaceId: 'ws_fixture',
+    canonicalPath: '/repo/project',
+    requestedPath: '/repo/project-link',
+    mode: 'checkout',
+    repoRoot: '/repo',
+    worktreePath: null,
+    baseRef: null,
+    branch: null,
+    createdAt: '2026-08-17T13:00:00.000Z',
+    lastUsedAt: '2026-08-17T13:01:00.000Z',
+    ownerInstance: 'daemon_fixture',
+    status: 'available',
+    metadataVersion: 2,
+  };
+
+  assert.deepEqual(parseWorkspaceRecord(record), record);
+  assert.throws(
+    () => parseWorkspaceRecord({ ...record, mode: 'worktree' }),
+    /invalid workspace record/i,
+  );
+  assert.throws(
+    () => parseWorkspaceRecord({ ...record, status: 'mostly-available' }),
+    /invalid workspace record/i,
+  );
+});
+
 test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () => {
   const ajv = new Ajv2020({ strict: true });
 
@@ -173,6 +205,9 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
   const validateRpcRequest = ajv.compile(RpcRequestSchema);
   const validateRpcResponse = ajv.compile(RpcResponseSchema);
   const validateRpcError = ajv.compile(RpcErrorSchema);
+  const validateWorkspaceMode = ajv.compile(WorkspaceModeSchema);
+  const validateWorkspaceStatus = ajv.compile(WorkspaceStatusSchema);
+  const validateWorkspaceRecord = ajv.compile(WorkspaceRecordSchema);
 
   assert.equal(validateResult({ ok: true, result: { value: 1 } }), true);
   assert.equal(validateResult({ ok: true, result: { value: 1 }, unexpected: true }), false);
@@ -219,6 +254,27 @@ test('wire schemas are valid JSON Schema 2020-12 and reject extra fields', () =>
   );
   assert.equal(
     validateRpcError({ code: 'TIMEOUT', message: 'deadline exceeded', retryable: true }),
+    true,
+  );
+  assert.equal(validateWorkspaceMode('checkout'), true);
+  assert.equal(validateWorkspaceMode('worktree'), false);
+  assert.equal(validateWorkspaceStatus('missing'), true);
+  assert.equal(
+    validateWorkspaceRecord({
+      workspaceId: 'ws_fixture',
+      canonicalPath: '/repo/project',
+      requestedPath: '/repo/project',
+      mode: 'checkout',
+      repoRoot: null,
+      worktreePath: null,
+      baseRef: null,
+      branch: null,
+      createdAt: '2026-08-17T13:00:00.000Z',
+      lastUsedAt: '2026-08-17T13:00:00.000Z',
+      ownerInstance: null,
+      status: 'available',
+      metadataVersion: 1,
+    }),
     true,
   );
 });

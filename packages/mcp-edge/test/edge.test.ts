@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { parseWorkspaceRecord } from '@udmcp/contracts';
 import { type DaemonHandle, startDaemon } from '@udmcp/daemon';
 
 import { type McpEdgeHandle, startMcpEdge } from '../src/index.js';
@@ -59,7 +60,7 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
     const listed = await client.listTools();
     assert.deepEqual(
       listed.tools.map((tool) => tool.name),
-      ['capabilities', 'health', 'system_info'],
+      ['capabilities', 'health', 'system_info', 'workspace_get', 'workspace_open'],
     );
 
     const health = await client.callTool({ name: 'health', arguments: {} });
@@ -74,6 +75,82 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
   } finally {
     await client.close();
     await closeFixture(fixture);
+  }
+});
+
+test('workspace tools use the durable daemon registry and preserve the handle across daemon restart', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'project');
+  const databasePath = join(fixture.dir, 'state.sqlite');
+  mkdirSync(project);
+  let restarted: DaemonHandle | undefined;
+
+  try {
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    assert.equal(opened.isError, undefined);
+    assert.equal(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'ok' in opened.structuredContent
+        ? opened.structuredContent.ok
+        : undefined,
+      true,
+    );
+    const firstWorkspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+
+    const fetched = await client.callTool({
+      name: 'workspace_get',
+      arguments: { workspaceId: firstWorkspace.workspaceId },
+    });
+    assert.equal(fetched.isError, undefined);
+    assert.deepEqual(
+      parseWorkspaceRecord(
+        typeof fetched.structuredContent === 'object' &&
+          fetched.structuredContent !== null &&
+          'workspace' in fetched.structuredContent
+          ? fetched.structuredContent.workspace
+          : undefined,
+      ),
+      firstWorkspace,
+    );
+
+    await fixture.daemon.close();
+    restarted = await startDaemon({
+      databasePath,
+      socketPath: fixture.daemon.socketPath,
+    });
+
+    const reopened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    assert.equal(reopened.isError, undefined);
+    const secondWorkspace = parseWorkspaceRecord(
+      typeof reopened.structuredContent === 'object' &&
+        reopened.structuredContent !== null &&
+        'workspace' in reopened.structuredContent
+        ? reopened.structuredContent.workspace
+        : undefined,
+    );
+    assert.equal(secondWorkspace.workspaceId, firstWorkspace.workspaceId);
+    assert.equal(secondWorkspace.ownerInstance, restarted.instanceId);
+    assert.equal(secondWorkspace.metadataVersion, firstWorkspace.metadataVersion + 1);
+  } finally {
+    await restarted?.close();
+    await client.close();
+    await fixture.edge.close();
+    await fixture.daemon.close();
+    rmSync(fixture.dir, { recursive: true, force: true });
   }
 });
 

@@ -56,6 +56,54 @@ export const OperationStateSchema = Type.Union(
 
 export type OperationState = Static<typeof OperationStateSchema>;
 
+export const WorkspaceModeSchema = Type.Union([Type.Literal('checkout')], {
+  $schema: JSON_SCHEMA_2020_12,
+});
+
+export type WorkspaceMode = Static<typeof WorkspaceModeSchema>;
+
+export const WorkspaceStatusSchema = Type.Union(
+  [
+    Type.Literal('available'),
+    Type.Literal('missing'),
+    Type.Literal('inaccessible'),
+    Type.Literal('invalid'),
+  ],
+  { $schema: JSON_SCHEMA_2020_12 },
+);
+
+export type WorkspaceStatus = Static<typeof WorkspaceStatusSchema>;
+
+export const WorkspaceRecordSchema = Type.Object(
+  {
+    workspaceId: Type.String({ minLength: 1, maxLength: 256 }),
+    canonicalPath: Type.String({ minLength: 1 }),
+    requestedPath: Type.String({ minLength: 1 }),
+    mode: WorkspaceModeSchema,
+    repoRoot: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    worktreePath: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    baseRef: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    branch: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    createdAt: Type.String({ minLength: 1 }),
+    lastUsedAt: Type.String({ minLength: 1 }),
+    ownerInstance: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    status: WorkspaceStatusSchema,
+    metadataVersion: Type.Integer({ minimum: 1 }),
+  },
+  {
+    $schema: JSON_SCHEMA_2020_12,
+    additionalProperties: false,
+  },
+);
+
+export type WorkspaceRecord = Omit<
+  Static<typeof WorkspaceRecordSchema>,
+  'workspaceId' | 'metadataVersion'
+> & {
+  workspaceId: WorkspaceId;
+  metadataVersion: EntityVersion;
+};
+
 export const RPC_SCHEMA_VERSION = 1 as const;
 
 export const RpcErrorSchema = Type.Object(
@@ -277,6 +325,10 @@ export function parseRpcRequest(value: unknown): RpcRequest {
 
 export function parseRpcResponse(value: unknown): RpcResponse {
   return parseSchema(RpcResponseSchema, value, 'rpc response') as RpcResponse;
+}
+
+export function parseWorkspaceRecord(value: unknown): WorkspaceRecord {
+  return parseSchema(WorkspaceRecordSchema, value, 'workspace record') as WorkspaceRecord;
 }
 
 export function parseEntityVersion(value: unknown): EntityVersion {

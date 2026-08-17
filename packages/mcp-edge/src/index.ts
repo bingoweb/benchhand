@@ -10,6 +10,7 @@ import {
   toNodeHandler,
 } from '@modelcontextprotocol/node';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { parseWorkspaceRecord } from '@udmcp/contracts';
 import { createLocalRpcClient, RpcCallError } from '@udmcp/local-rpc';
 import * as z from 'zod/v4';
 
@@ -52,6 +53,35 @@ const systemInfoOutputSchema = z.object({
   platform: z.string(),
   architecture: z.string(),
 });
+
+const workspaceRecordOutputSchema = z.object({
+  workspaceId: z.string().min(1),
+  canonicalPath: z.string().min(1),
+  requestedPath: z.string().min(1),
+  mode: z.literal('checkout'),
+  repoRoot: z.string().min(1).nullable(),
+  worktreePath: z.string().min(1).nullable(),
+  baseRef: z.string().min(1).nullable(),
+  branch: z.string().min(1).nullable(),
+  createdAt: z.string().min(1),
+  lastUsedAt: z.string().min(1),
+  ownerInstance: z.string().min(1).nullable(),
+  status: z.enum(['available', 'missing', 'inaccessible', 'invalid']),
+  metadataVersion: z.number().int().min(1),
+});
+
+const workspaceToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    workspace: workspaceRecordOutputSchema,
+  }),
+  z.object({
+    ok: z.literal(false),
+    errorCode: z.string().min(1),
+    message: z.string().min(1),
+    retryable: z.boolean(),
+  }),
+]);
 
 export interface StartMcpEdgeOptions {
   daemonSocketPath: string;
@@ -216,7 +246,68 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
       }),
   );
 
+  server.registerTool(
+    'workspace_get',
+    {
+      title: 'Get Workspace',
+      description: 'Read a durable workspace handle and refresh its filesystem availability.',
+      inputSchema: z.object({ workspaceId: z.string().min(1) }),
+      outputSchema: workspaceToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async ({ workspaceId }) => callWorkspaceRpc(daemonClient, 'workspace.get', { workspaceId }),
+  );
+
+  server.registerTool(
+    'workspace_open',
+    {
+      title: 'Open Workspace',
+      description:
+        'Open or reuse an existing checkout workspace by canonical path and return its durable handle.',
+      inputSchema: z.object({ path: z.string().min(1) }),
+      outputSchema: workspaceToolOutputSchema,
+      annotations: workspaceOpenAnnotations(),
+    },
+    async ({ path }) => callWorkspaceRpc(daemonClient, 'workspace.open', { path }),
+  );
+
   return server;
+}
+
+async function callWorkspaceRpc(
+  daemonClient: ReturnType<typeof createLocalRpcClient>,
+  method: 'workspace.get' | 'workspace.open',
+  params: Record<string, string>,
+) {
+  try {
+    const raw = await daemonClient.call({
+      requestId: `edge_workspace_${randomUUID()}`,
+      method,
+      params,
+      deadlineUnixMs: Date.now() + 5_000,
+    });
+    const workspace = parseWorkspaceRecord(raw);
+    return toolSuccess({ ok: true as const, workspace });
+  } catch (error) {
+    const output =
+      error instanceof RpcCallError
+        ? {
+            ok: false as const,
+            errorCode: error.code,
+            message: error.message,
+            retryable: error.retryable,
+          }
+        : {
+            ok: false as const,
+            errorCode: 'CORE_FAILURE',
+            message: error instanceof Error ? error.message : 'Workspace RPC failed',
+            retryable: false,
+          };
+    return {
+      ...toolSuccess(output),
+      isError: true,
+    };
+  }
 }
 
 function readOnlyAnnotations() {
@@ -224,6 +315,15 @@ function readOnlyAnnotations() {
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
+    openWorldHint: false,
+  } as const;
+}
+
+function workspaceOpenAnnotations() {
+  return {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
     openWorldHint: false,
   } as const;
 }

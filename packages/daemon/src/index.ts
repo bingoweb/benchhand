@@ -15,6 +15,7 @@ import {
 } from '@udmcp/contracts';
 import { OperationJournal } from '@udmcp/operations';
 import { openSqliteDatabase, type SqliteDatabase } from '@udmcp/storage';
+import { WorkspaceRegistry, WorkspaceRegistryError } from '@udmcp/workspace';
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -53,20 +54,21 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
   let server: http.Server | undefined;
 
   try {
+    const instanceId = `daemon_${randomUUID()}`;
     const journal = new OperationJournal(database);
     journal.reconcileInterrupted();
+    const workspaces = new WorkspaceRegistry(database, { ownerInstance: instanceId });
     const storageIntegrity = database.integrityCheck();
     if (storageIntegrity !== 'ok') {
       throw new Error(`SQLite integrity check failed: ${storageIntegrity}`);
     }
 
-    const instanceId = `daemon_${randomUUID()}`;
     let ready = false;
     server = http.createServer((request, response) => {
       void handleHttpRequest(
         request,
         response,
-        createDispatchContext(database, journal, instanceId, () => ready),
+        createDispatchContext(database, journal, workspaces, instanceId, () => ready),
       );
     });
     server.maxHeadersCount = 32;
@@ -189,6 +191,7 @@ function isErrnoCode(error: unknown, code: string): error is NodeJS.ErrnoExcepti
 interface DispatchContext {
   database: SqliteDatabase;
   journal: OperationJournal;
+  workspaces: WorkspaceRegistry;
   instanceId: string;
   isReady: () => boolean;
 }
@@ -196,10 +199,11 @@ interface DispatchContext {
 function createDispatchContext(
   database: SqliteDatabase,
   journal: OperationJournal,
+  workspaces: WorkspaceRegistry,
   instanceId: string,
   isReady: () => boolean,
 ): DispatchContext {
-  return { database, journal, instanceId, isReady };
+  return { database, journal, workspaces, instanceId, isReady };
 }
 
 async function handleHttpRequest(
@@ -256,7 +260,7 @@ async function handleHttpRequest(
       return;
     }
 
-    const result = dispatchRpc(rpcRequest, context);
+    const result = await dispatchRpc(rpcRequest, context);
     writeRpcSuccess(response, requestId, result);
   } catch (error) {
     if (error instanceof DispatchError) {
@@ -285,7 +289,7 @@ function readRequestedSchemaVersion(value: unknown): number | undefined {
   return value.schemaVersion;
 }
 
-function dispatchRpc(request: RpcRequest, context: DispatchContext): JsonValue {
+async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promise<JsonValue> {
   switch (request.method) {
     case 'system.health':
       return {
@@ -308,6 +312,35 @@ function dispatchRpc(request: RpcRequest, context: DispatchContext): JsonValue {
       }
       return parseResultEnvelope({ ok: true, result: record }).result as JsonValue;
     }
+    case 'workspace.open': {
+      const path = readWorkspaceOpenPath(request.params);
+      try {
+        const workspace = await context.workspaces.open(path);
+        return parseResultEnvelope({ ok: true, result: workspace }).result as JsonValue;
+      } catch (error) {
+        if (error instanceof WorkspaceRegistryError) {
+          throw new DispatchError({
+            code: error.code,
+            message: error.message,
+            retryable: error.code === 'WORKSPACE_PATH_INACCESSIBLE',
+            details: { path: error.path },
+          });
+        }
+        throw error;
+      }
+    }
+    case 'workspace.get': {
+      const workspaceId = readWorkspaceIdParam(request.params);
+      const workspace = await context.workspaces.get(workspaceId);
+      if (workspace === undefined) {
+        throw new DispatchError({
+          code: 'NOT_FOUND',
+          message: `workspace ${workspaceId} was not found`,
+          retryable: false,
+        });
+      }
+      return parseResultEnvelope({ ok: true, result: workspace }).result as JsonValue;
+    }
     default:
       throw new DispatchError({
         code: 'METHOD_NOT_FOUND',
@@ -315,6 +348,40 @@ function dispatchRpc(request: RpcRequest, context: DispatchContext): JsonValue {
         retryable: false,
       });
   }
+}
+
+function readWorkspaceOpenPath(params: unknown): string {
+  if (
+    typeof params !== 'object' ||
+    params === null ||
+    !('path' in params) ||
+    typeof params.path !== 'string' ||
+    params.path.length === 0
+  ) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'workspace.open requires params.path',
+      retryable: false,
+    });
+  }
+  return params.path;
+}
+
+function readWorkspaceIdParam(params: unknown) {
+  if (
+    typeof params !== 'object' ||
+    params === null ||
+    !('workspaceId' in params) ||
+    typeof params.workspaceId !== 'string'
+  ) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'workspace.get requires params.workspaceId',
+      retryable: false,
+    });
+  }
+
+  return parseEntityId('workspace', params.workspaceId);
 }
 
 function readOperationIdParam(params: unknown) {

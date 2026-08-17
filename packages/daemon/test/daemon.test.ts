@@ -2,19 +2,19 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseEntityId } from '@udmcp/contracts';
+import { parseEntityId, parseWorkspaceRecord } from '@udmcp/contracts';
 import { createLocalRpcClient, RpcCallError } from '@udmcp/local-rpc';
 import { OperationJournal } from '@udmcp/operations';
 import { openSqliteDatabase } from '@udmcp/storage';
 
-import { DaemonStartError, startDaemon } from '../src/index.js';
+import { type DaemonHandle, DaemonStartError, startDaemon } from '../src/index.js';
 
 function ipcPath(dir: string, name: string): string {
   if (process.platform === 'win32') {
@@ -228,6 +228,102 @@ test('restart returns CORE_UNAVAILABLE while down and preserves a durable operat
       assert.deepEqual(after, before);
     } finally {
       await second.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('workspace RPC reuses the same durable handle across daemon restart', async () => {
+  const dir = testTempDir('udmcp-daemon-workspace-restart-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'workspace-restart');
+  const project = join(dir, 'project');
+  mkdirSync(project);
+  let first: DaemonHandle | undefined;
+  let second: DaemonHandle | undefined;
+
+  try {
+    first = await startDaemon({ databasePath, socketPath });
+    const client = createLocalRpcClient({ socketPath });
+    const opened = await client.call({
+      requestId: 'req_workspace_open_first',
+      method: 'workspace.open',
+      params: { path: project },
+    });
+    const openedRecord = parseWorkspaceRecord(opened);
+    const workspaceId = openedRecord.workspaceId;
+    assert.equal(openedRecord.ownerInstance, first.instanceId);
+
+    const before = await client.call({
+      requestId: 'req_workspace_get_first',
+      method: 'workspace.get',
+      params: { workspaceId },
+    });
+    assert.deepEqual(parseWorkspaceRecord(before), openedRecord);
+    await first.close();
+
+    second = await startDaemon({ databasePath, socketPath });
+    const reopened = await client.call({
+      requestId: 'req_workspace_open_second',
+      method: 'workspace.open',
+      params: { path: project },
+    });
+    const reopenedRecord = parseWorkspaceRecord(reopened);
+    assert.equal(reopenedRecord.workspaceId, workspaceId);
+    assert.equal(reopenedRecord.ownerInstance, second.instanceId);
+    assert.equal(reopenedRecord.metadataVersion, 2);
+
+    rmSync(project, { recursive: true, force: true });
+    const missing = await client.call({
+      requestId: 'req_workspace_get_missing_path',
+      method: 'workspace.get',
+      params: { workspaceId },
+    });
+    const missingRecord = parseWorkspaceRecord(missing);
+    assert.equal(missingRecord.workspaceId, workspaceId);
+    assert.equal(missingRecord.status, 'missing');
+  } finally {
+    await second?.close();
+    await first?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('workspace RPC preserves structured path and missing-handle errors', async () => {
+  const dir = testTempDir('udmcp-daemon-workspace-errors-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'workspace-errors');
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      await assert.rejects(
+        () =>
+          client.call({
+            requestId: 'req_workspace_missing_path',
+            method: 'workspace.open',
+            params: { path: join(dir, 'does-not-exist') },
+          }),
+        (error: unknown) =>
+          error instanceof RpcCallError &&
+          error.code === 'WORKSPACE_PATH_NOT_FOUND' &&
+          error.retryable === false,
+      );
+
+      await assert.rejects(
+        () =>
+          client.call({
+            requestId: 'req_workspace_missing_handle',
+            method: 'workspace.get',
+            params: { workspaceId: 'ws_missing' },
+          }),
+        (error: unknown) =>
+          error instanceof RpcCallError && error.code === 'NOT_FOUND' && error.retryable === false,
+      );
+    } finally {
+      await daemon.close();
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

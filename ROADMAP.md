@@ -17,14 +17,14 @@ Status: **locally complete**
 
 ## M1 — Workspace and filesystem core
 
-Status: **in progress**
+Status: **locally complete**
 
 - durable workspace registry — complete;
 - deterministic managed Git worktrees — complete;
 - bounded file read/list/search — complete;
 - atomic file write — complete;
 - deterministic patch — complete;
-- instructions and local skills resolver — planned.
+- instructions and local skills resolver — complete; hierarchical `AGENTS.md` / `CLAUDE.md` resolution plus Agent Skills metadata discovery and explicit `SKILL.md` activation.
 
 ## M2 — Persistent process, task, and terminal runtime
 

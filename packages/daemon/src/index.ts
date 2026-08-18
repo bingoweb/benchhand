@@ -15,6 +15,7 @@ import {
   type RpcRequest,
 } from '@benchhand/contracts';
 import { FilesystemError, FilesystemService } from '@benchhand/filesystem';
+import { InstructionsError, InstructionsService } from '@benchhand/instructions';
 import { OperationJournal } from '@benchhand/operations';
 import { openSqliteDatabase, type SqliteDatabase } from '@benchhand/storage';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '@benchhand/workspace';
@@ -71,6 +72,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     const filesystem = new FilesystemService({
       resolveWorkspace: (workspaceId) => workspaces.get(workspaceId),
     });
+    const instructions = new InstructionsService({
+      resolveWorkspace: (workspaceId) => workspaces.get(workspaceId),
+    });
     const storageIntegrity = database.integrityCheck();
     if (storageIntegrity !== 'ok') {
       throw new Error(`SQLite integrity check failed: ${storageIntegrity}`);
@@ -81,7 +85,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       void handleHttpRequest(
         request,
         response,
-        createDispatchContext(database, journal, workspaces, filesystem, instanceId, () => ready),
+        createDispatchContext(
+          database,
+          journal,
+          workspaces,
+          filesystem,
+          instructions,
+          instanceId,
+          () => ready,
+        ),
       );
     });
     server.maxHeadersCount = 32;
@@ -206,6 +218,7 @@ interface DispatchContext {
   journal: OperationJournal;
   workspaces: WorkspaceRegistry;
   filesystem: FilesystemService;
+  instructions: InstructionsService;
   instanceId: string;
   isReady: () => boolean;
 }
@@ -215,10 +228,11 @@ function createDispatchContext(
   journal: OperationJournal,
   workspaces: WorkspaceRegistry,
   filesystem: FilesystemService,
+  instructions: InstructionsService,
   instanceId: string,
   isReady: () => boolean,
 ): DispatchContext {
-  return { database, journal, workspaces, filesystem, instanceId, isReady };
+  return { database, journal, workspaces, filesystem, instructions, instanceId, isReady };
 }
 
 async function handleHttpRequest(
@@ -375,12 +389,44 @@ async function dispatchRpc(request: RpcRequest, context: DispatchContext): Promi
       return dispatchFilesystem(() =>
         context.filesystem.patch(readFilePatchParams(request.params)),
       );
+    case 'instructions.resolve':
+      return dispatchInstructions(() =>
+        context.instructions.resolve(readInstructionsResolveParams(request.params)),
+      );
+    case 'skills.list':
+      return dispatchInstructions(() =>
+        context.instructions.listSkills(readSkillsListParams(request.params)),
+      );
+    case 'skills.read':
+      return dispatchInstructions(() =>
+        context.instructions.readSkill(readSkillsReadParams(request.params)),
+      );
     default:
       throw new DispatchError({
         code: 'METHOD_NOT_FOUND',
         message: `RPC method ${request.method} is not supported`,
         retryable: false,
       });
+  }
+}
+
+async function dispatchInstructions(operation: () => Promise<unknown>): Promise<JsonValue> {
+  try {
+    return (await operation()) as JsonValue;
+  } catch (error) {
+    if (error instanceof InstructionsError) {
+      throw new DispatchError({
+        code: error.code,
+        message: error.message,
+        retryable:
+          error.code === 'SCOPE_INACCESSIBLE' ||
+          error.code === 'INSTRUCTION_INACCESSIBLE' ||
+          error.code === 'INSTRUCTION_CHANGED_DURING_READ' ||
+          error.code === 'SKILL_INACCESSIBLE',
+        ...(error.path === null ? {} : { details: { path: error.path } }),
+      });
+    }
+    throw error;
   }
 }
 
@@ -494,6 +540,42 @@ function readFilePatchParams(params: unknown) {
     return { oldText: edit.oldText, newText: edit.newText };
   });
   return { workspaceId, path, expectedSha256, edits };
+}
+
+function readInstructionsResolveParams(params: unknown) {
+  const value = readParamsObject(params, 'instructions.resolve');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'instructions.resolve');
+  if (!('scopePath' in value) || value.scopePath === undefined) {
+    return { workspaceId };
+  }
+  if (typeof value.scopePath !== 'string') {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'instructions.resolve params.scopePath must be a string',
+      retryable: false,
+    });
+  }
+  return { workspaceId, scopePath: value.scopePath };
+}
+
+function readSkillsListParams(params: unknown) {
+  const value = readParamsObject(params, 'skills.list');
+  return {
+    workspaceId: readWorkspaceIdValue(value.workspaceId, 'skills.list'),
+  };
+}
+
+function readSkillsReadParams(params: unknown) {
+  const value = readParamsObject(params, 'skills.read');
+  const workspaceId = readWorkspaceIdValue(value.workspaceId, 'skills.read');
+  if (typeof value.skillId !== 'string' || value.skillId.length === 0) {
+    throw new DispatchError({
+      code: 'INVALID_REQUEST',
+      message: 'skills.read requires params.skillId',
+      retryable: false,
+    });
+  }
+  return { workspaceId, skillId: value.skillId };
 }
 
 function mergeFilesystemErrorDetails(error: FilesystemError): JsonValue | undefined {

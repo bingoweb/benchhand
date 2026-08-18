@@ -104,7 +104,7 @@ The current local development line has working foundations for:
 | File read/list/search | ✅ Implemented | Bounded, deterministic, symlink-aware |
 | Atomic file write | ✅ Implemented | Hash preconditions, atomic commit, conflict reporting |
 | Deterministic patch | ✅ Implemented | Exact matching, hash preconditions, no fuzzy mutation |
-| Instructions / skills resolver | ⏳ Planned | Next M1 slice |
+| Instructions / skills resolver | ✅ Implemented | AGENTS/CLAUDE hierarchy, Agent Skills discovery, metadata-only listing and explicit skill activation |
 | Persistent processes / PTY | ⏳ Planned | M2 |
 | Structured Git / review | ⏳ Planned | M3 |
 | Plugin SDK / host | ⏳ Planned | M4 |

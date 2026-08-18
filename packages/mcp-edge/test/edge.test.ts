@@ -108,6 +108,9 @@ test('pinned 2026 client discovers the modern era and calls the real daemon heal
         'file_search',
         'file_write',
         'file_patch',
+        'instructions_resolve',
+        'skills_list',
+        'skill_read',
         'workspace_get',
         'workspace_open',
       ],
@@ -509,6 +512,151 @@ test('file_patch exposes deterministic exact edits and structured conflict evide
   }
 });
 
+test('instructions_resolve exposes hierarchical agent instructions as a read-only MCP tool', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'instructions-project');
+  mkdirSync(join(project, 'src'), { recursive: true });
+  writeFileSync(join(project, 'AGENTS.md'), 'root agents\n');
+  writeFileSync(join(project, 'src', 'CLAUDE.md'), 'src claude\n');
+
+  try {
+    const listed = await client.listTools();
+    const tool = listed.tools.find((candidate) => candidate.name === 'instructions_resolve');
+    assert.notEqual(tool, undefined);
+    assert.deepEqual(tool?.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+
+    const resolved = await client.callTool({
+      name: 'instructions_resolve',
+      arguments: { workspaceId: workspace.workspaceId, scopePath: 'src' },
+    });
+    assert.equal(resolved.isError, undefined);
+    assert.deepEqual(resolved.structuredContent, {
+      ok: true,
+      resolution: {
+        workspaceId: workspace.workspaceId,
+        scopePath: 'src',
+        scopes: ['.', 'src'],
+        documents: [
+          {
+            providerId: 'builtin.agents',
+            scopePath: '.',
+            sourceId: 'AGENTS.md',
+            path: 'AGENTS.md',
+            content: 'root agents\n',
+            sha256: sha256('root agents\n'),
+          },
+          {
+            providerId: 'builtin.claude',
+            scopePath: 'src',
+            sourceId: 'CLAUDE.md',
+            path: 'src/CLAUDE.md',
+            content: 'src claude\n',
+            sha256: sha256('src claude\n'),
+          },
+        ],
+      },
+    });
+
+    const escaped = await client.callTool({
+      name: 'instructions_resolve',
+      arguments: { workspaceId: workspace.workspaceId, scopePath: '../outside' },
+    });
+    assert.equal(escaped.isError, true);
+    assert.deepEqual(escaped.structuredContent, {
+      ok: false,
+      errorCode: 'PATH_OUTSIDE_WORKSPACE',
+      message: 'scope path traversal is not allowed',
+      retryable: false,
+      details: { path: '../outside' },
+    });
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
+  }
+});
+
+test('skills_list exposes metadata-only Agent Skills discovery as a read-only MCP tool', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'skills-list-project');
+  const skillDirectory = join(project, '.agents', 'skills', 'review-change');
+  mkdirSync(skillDirectory, { recursive: true });
+  writeFileSync(
+    join(skillDirectory, 'SKILL.md'),
+    '---\nname: review-change\ndescription: Review a change before merging.\n---\n\n# Hidden skill body\n',
+  );
+
+  try {
+    const listed = await client.listTools();
+    const tool = listed.tools.find((candidate) => candidate.name === 'skills_list');
+    assert.notEqual(tool, undefined);
+    assert.deepEqual(tool?.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+    const result = await client.callTool({
+      name: 'skills_list',
+      arguments: { workspaceId: workspace.workspaceId },
+    });
+    assert.equal(result.isError, undefined);
+    assert.equal(JSON.stringify(result.structuredContent).includes('Hidden skill body'), false);
+    assert.deepEqual(
+      typeof result.structuredContent === 'object' &&
+        result.structuredContent !== null &&
+        'catalog' in result.structuredContent &&
+        typeof result.structuredContent.catalog === 'object' &&
+        result.structuredContent.catalog !== null &&
+        'skills' in result.structuredContent.catalog &&
+        Array.isArray(result.structuredContent.catalog.skills)
+        ? result.structuredContent.catalog.skills.map((skill) =>
+            typeof skill === 'object' &&
+            skill !== null &&
+            'skillId' in skill &&
+            'description' in skill
+              ? { skillId: skill.skillId, description: skill.description }
+              : null,
+          )
+        : [],
+      [{ skillId: 'project:review-change', description: 'Review a change before merging.' }],
+    );
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
+  }
+});
+
 test('legacy and auto clients negotiate their intended eras against the same endpoint', async () => {
   const fixture = await createFixture();
   const legacy = await connectClient(fixture.edge.url, 'legacy');
@@ -555,5 +703,58 @@ test('tools/list cannot mask a dead daemon when the listed health tool is actual
     await client.close();
     await fixture.edge.close();
     rmSync(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test('skill_read loads the selected SKILL.md body only after explicit activation', async () => {
+  const fixture = await createFixture();
+  const client = await connectClient(fixture.edge.url, 'modern');
+  const project = join(fixture.dir, 'skill-read-project');
+  const skillDirectory = join(project, '.agents', 'skills', 'release-check');
+  mkdirSync(skillDirectory, { recursive: true });
+  const source =
+    '---\nname: release-check\ndescription: Validate a release before publishing.\n---\n\n# Release Check\n\nFull skill body.\n';
+  writeFileSync(join(skillDirectory, 'SKILL.md'), source);
+
+  try {
+    const listed = await client.listTools();
+    const tool = listed.tools.find((candidate) => candidate.name === 'skill_read');
+    assert.notEqual(tool, undefined);
+    assert.deepEqual(tool?.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+
+    const opened = await client.callTool({
+      name: 'workspace_open',
+      arguments: { path: project },
+    });
+    const workspace = parseWorkspaceRecord(
+      typeof opened.structuredContent === 'object' &&
+        opened.structuredContent !== null &&
+        'workspace' in opened.structuredContent
+        ? opened.structuredContent.workspace
+        : undefined,
+    );
+    const result = await client.callTool({
+      name: 'skill_read',
+      arguments: { workspaceId: workspace.workspaceId, skillId: 'project:release-check' },
+    });
+    assert.equal(result.isError, undefined);
+    const skill =
+      typeof result.structuredContent === 'object' &&
+      result.structuredContent !== null &&
+      'skill' in result.structuredContent &&
+      typeof result.structuredContent.skill === 'object' &&
+      result.structuredContent.skill !== null
+        ? result.structuredContent.skill
+        : undefined;
+    assert.equal(skill && 'content' in skill ? skill.content : undefined, source);
+    assert.equal(skill && 'sha256' in skill ? skill.sha256 : undefined, sha256(source));
+  } finally {
+    await client.close();
+    await closeFixture(fixture);
   }
 });

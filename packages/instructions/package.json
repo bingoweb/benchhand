@@ -1,5 +1,5 @@
 {
-  "name": "@benchhand/daemon",
+  "name": "@benchhand/instructions",
   "version": "0.0.0-dev",
   "private": true,
   "license": "Apache-2.0",
@@ -13,11 +13,6 @@
   },
   "dependencies": {
     "@benchhand/contracts": "0.0.0-dev",
-    "@benchhand/filesystem": "0.0.0-dev",
-    "@benchhand/instructions": "0.0.0-dev",
-    "@benchhand/local-rpc": "0.0.0-dev",
-    "@benchhand/operations": "0.0.0-dev",
-    "@benchhand/storage": "0.0.0-dev",
-    "@benchhand/workspace": "0.0.0-dev"
+    "yaml": "2.9.0"
   }
 }

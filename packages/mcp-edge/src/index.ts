@@ -146,6 +146,69 @@ const filePatchResultSchema = z.object({
   durability: z.enum(['file-and-directory', 'file-only']),
 });
 
+const instructionDocumentSchema = z.object({
+  providerId: z.string().min(1),
+  scopePath: z.string().min(1),
+  sourceId: z.string().min(1),
+  path: z.string().min(1).nullable(),
+  content: z.string(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+const instructionsResolveResultSchema = z.object({
+  workspaceId: z.string().min(1),
+  scopePath: z.string().min(1),
+  scopes: z.array(z.string().min(1)),
+  documents: z.array(instructionDocumentSchema),
+});
+
+const skillSourceKindSchema = z.enum([
+  'project',
+  'benchhand-user',
+  'agents-user',
+  'codex-user',
+  'devspace-compat',
+  'configured',
+]);
+
+const skillSummarySchema = z.object({
+  skillId: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().min(1),
+  sourceId: z.string().min(1),
+  sourceKind: skillSourceKindSchema,
+  skillDirectoryPath: z.string().min(1),
+  skillFilePath: z.string().min(1),
+  metadataSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  license: z.string().nullable(),
+  compatibility: z.string().nullable(),
+  metadata: z.record(z.string(), z.string()),
+  allowedTools: z.string().nullable(),
+});
+
+const invalidSkillEntrySchema = z.object({
+  sourceId: z.string().min(1),
+  sourceKind: skillSourceKindSchema,
+  skillDirectoryPath: z.string().min(1),
+  skillFilePath: z.string().min(1).nullable(),
+  errorCode: z.string().min(1),
+  message: z.string().min(1),
+});
+
+const skillsListResultSchema = z.object({
+  workspaceId: z.string().min(1),
+  skills: z.array(skillSummarySchema),
+  shadowed: z.array(skillSummarySchema),
+  invalid: z.array(invalidSkillEntrySchema),
+});
+
+const skillReadResultSchema = z.object({
+  workspaceId: z.string().min(1),
+  skill: skillSummarySchema,
+  content: z.string(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
 const filesystemErrorOutputSchema = z.object({
   ok: z.literal(false),
   errorCode: z.string().min(1),
@@ -176,6 +239,21 @@ const fileWriteToolOutputSchema = z.discriminatedUnion('ok', [
 
 const filePatchToolOutputSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), patch: filePatchResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const instructionsResolveToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), resolution: instructionsResolveResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const skillsListToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), catalog: skillsListResultSchema }),
+  filesystemErrorOutputSchema,
+]);
+
+const skillReadToolOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), skill: skillReadResultSchema }),
   filesystemErrorOutputSchema,
 ]);
 
@@ -499,6 +577,53 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   server.registerTool(
+    'instructions_resolve',
+    {
+      title: 'Resolve Project Instructions',
+      description:
+        'Resolve AGENTS.md, CLAUDE.md compatibility instructions, and future provider contributions from workspace root to the nearest requested directory scope. Results preserve deterministic source order and hashes.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        scopePath: z.string().max(4096).optional(),
+      }),
+      outputSchema: instructionsResolveToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async (params) => callInstructionsRpc(daemonClient, definedParams(params)),
+  );
+
+  server.registerTool(
+    'skills_list',
+    {
+      title: 'List Agent Skills',
+      description:
+        'Discover Agent Skills metadata from project, Benchhand user, open-standard, and compatibility roots without loading SKILL.md instruction bodies.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+      }),
+      outputSchema: skillsListToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async ({ workspaceId }) => callSkillsListRpc(daemonClient, { workspaceId }),
+  );
+
+  server.registerTool(
+    'skill_read',
+    {
+      title: 'Read Agent Skill',
+      description:
+        'Load the selected SKILL.md instruction body only after explicit skill activation by durable workspace and skill id.',
+      inputSchema: z.object({
+        workspaceId: z.string().min(1),
+        skillId: z.string().min(1),
+      }),
+      outputSchema: skillReadToolOutputSchema,
+      annotations: readOnlyAnnotations(),
+    },
+    async ({ workspaceId, skillId }) => callSkillReadRpc(daemonClient, { workspaceId, skillId }),
+  );
+
+  server.registerTool(
     'workspace_get',
     {
       title: 'Get Workspace',
@@ -533,6 +658,114 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
   );
 
   return server;
+}
+
+async function callInstructionsRpc(
+  daemonClient: ReturnType<typeof createLocalRpcClient>,
+  params: Record<string, JsonValue>,
+) {
+  try {
+    const raw = await daemonClient.call({
+      requestId: `edge_instructions_${randomUUID()}`,
+      method: 'instructions.resolve',
+      params,
+      deadlineUnixMs: Date.now() + 5_000,
+    });
+    const resolution = instructionsResolveResultSchema.parse(raw);
+    return toolSuccess({ ok: true as const, resolution });
+  } catch (error) {
+    const output =
+      error instanceof RpcCallError
+        ? {
+            ok: false as const,
+            errorCode: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            ...(error.details === undefined ? {} : { details: error.details }),
+          }
+        : {
+            ok: false as const,
+            errorCode: 'CORE_FAILURE',
+            message: error instanceof Error ? error.message : 'Instructions RPC failed',
+            retryable: false,
+          };
+    return {
+      ...toolSuccess(output),
+      isError: true,
+    };
+  }
+}
+
+async function callSkillsListRpc(
+  daemonClient: ReturnType<typeof createLocalRpcClient>,
+  params: Record<string, JsonValue>,
+) {
+  try {
+    const raw = await daemonClient.call({
+      requestId: `edge_skills_list_${randomUUID()}`,
+      method: 'skills.list',
+      params,
+      deadlineUnixMs: Date.now() + 5_000,
+    });
+    const catalog = skillsListResultSchema.parse(raw);
+    return toolSuccess({ ok: true as const, catalog });
+  } catch (error) {
+    const output =
+      error instanceof RpcCallError
+        ? {
+            ok: false as const,
+            errorCode: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            ...(error.details === undefined ? {} : { details: error.details }),
+          }
+        : {
+            ok: false as const,
+            errorCode: 'CORE_FAILURE',
+            message: error instanceof Error ? error.message : 'Skills list RPC failed',
+            retryable: false,
+          };
+    return {
+      ...toolSuccess(output),
+      isError: true,
+    };
+  }
+}
+
+async function callSkillReadRpc(
+  daemonClient: ReturnType<typeof createLocalRpcClient>,
+  params: Record<string, JsonValue>,
+) {
+  try {
+    const raw = await daemonClient.call({
+      requestId: `edge_skill_read_${randomUUID()}`,
+      method: 'skills.read',
+      params,
+      deadlineUnixMs: Date.now() + 5_000,
+    });
+    const skill = skillReadResultSchema.parse(raw);
+    return toolSuccess({ ok: true as const, skill });
+  } catch (error) {
+    const output =
+      error instanceof RpcCallError
+        ? {
+            ok: false as const,
+            errorCode: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            ...(error.details === undefined ? {} : { details: error.details }),
+          }
+        : {
+            ok: false as const,
+            errorCode: 'CORE_FAILURE',
+            message: error instanceof Error ? error.message : 'Skill read RPC failed',
+            retryable: false,
+          };
+    return {
+      ...toolSuccess(output),
+      isError: true,
+    };
+  }
 }
 
 async function callFilesystemRpc(

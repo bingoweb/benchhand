@@ -15,10 +15,12 @@ It is not a replacement for the license files shipped by those projects. Release
 | `balanced-match` | 4.0.4 | MIT |
 | `better-sqlite3` | 13.0.3 | MIT |
 | `brace-expansion` | 5.0.9 | MIT |
+| `hono` | 4.13.2 | MIT |
 | `minimatch` | 10.2.6 | BlueOak-1.0.0 |
 | `node-addon-api` | 8.9.2 | MIT |
 | `typebox` | 1.3.15 | MIT |
-| `zod` | 4.2.1 | MIT |
+| `yaml` | 2.9.0 | ISC |
+| `zod` | 4.4.3 | MIT |
 
 ## Development-only dependencies
 

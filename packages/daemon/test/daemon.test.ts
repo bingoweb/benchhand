@@ -501,6 +501,185 @@ test('filesystem RPC reads lists and searches only through an available durable 
   }
 });
 
+test('instructions.resolve RPC returns hierarchical project instructions and observes invalidation', async () => {
+  const dir = testTempDir('benchhand-daemon-instructions-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'instructions');
+  const project = join(dir, 'project');
+  mkdirSync(join(project, 'src'), { recursive: true });
+  writeFileSync(join(project, 'CLAUDE.md'), 'root claude\n');
+  writeFileSync(join(project, 'AGENTS.md'), 'root agents\n');
+  writeFileSync(join(project, 'src', 'AGENTS.md'), 'src agents v1\n');
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_instructions_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+
+      const first = await client.call({
+        requestId: 'req_instructions_first',
+        method: 'instructions.resolve',
+        params: { workspaceId: workspace.workspaceId, scopePath: 'src' },
+      });
+      assert.deepEqual(
+        typeof first === 'object' &&
+          first !== null &&
+          'documents' in first &&
+          Array.isArray(first.documents)
+          ? first.documents.map((document) =>
+              typeof document === 'object' &&
+              document !== null &&
+              'path' in document &&
+              'content' in document
+                ? { path: document.path, content: document.content }
+                : null,
+            )
+          : [],
+        [
+          { path: 'CLAUDE.md', content: 'root claude\n' },
+          { path: 'AGENTS.md', content: 'root agents\n' },
+          { path: 'src/AGENTS.md', content: 'src agents v1\n' },
+        ],
+      );
+
+      writeFileSync(join(project, 'src', 'AGENTS.md'), 'src agents v2\n');
+      const changed = await client.call({
+        requestId: 'req_instructions_changed',
+        method: 'instructions.resolve',
+        params: { workspaceId: workspace.workspaceId, scopePath: 'src' },
+      });
+      const changedDocuments =
+        typeof changed === 'object' &&
+        changed !== null &&
+        'documents' in changed &&
+        Array.isArray(changed.documents)
+          ? changed.documents
+          : [];
+      const lastDocument = changedDocuments.at(-1);
+      assert.equal(
+        typeof lastDocument === 'object' &&
+          lastDocument !== null &&
+          !Array.isArray(lastDocument) &&
+          'content' in lastDocument
+          ? lastDocument.content
+          : undefined,
+        'src agents v2\n',
+      );
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skills.list RPC exposes project skill metadata without loading the SKILL.md body', async () => {
+  const dir = testTempDir('benchhand-daemon-skills-list-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'skills-list');
+  const project = join(dir, 'project');
+  const skillDirectory = join(project, '.agents', 'skills', 'test-review');
+  mkdirSync(skillDirectory, { recursive: true });
+  writeFileSync(
+    join(skillDirectory, 'SKILL.md'),
+    '---\nname: test-review\ndescription: Review a change before merging.\n---\n\n# Hidden body\n',
+  );
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_skills_list_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+      const result = await client.call({
+        requestId: 'req_skills_list',
+        method: 'skills.list',
+        params: { workspaceId: workspace.workspaceId },
+      });
+      assert.equal(JSON.stringify(result).includes('Hidden body'), false);
+      assert.deepEqual(
+        typeof result === 'object' &&
+          result !== null &&
+          'skills' in result &&
+          Array.isArray(result.skills)
+          ? result.skills.map((skill) =>
+              typeof skill === 'object' &&
+              skill !== null &&
+              'skillId' in skill &&
+              'description' in skill
+                ? { skillId: skill.skillId, description: skill.description }
+                : null,
+            )
+          : [],
+        [{ skillId: 'project:test-review', description: 'Review a change before merging.' }],
+      );
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('skills.read RPC returns the selected SKILL.md body only after explicit activation', async () => {
+  const dir = testTempDir('benchhand-daemon-skills-read-test-');
+  const databasePath = join(dir, 'state.sqlite');
+  const socketPath = ipcPath(dir, 'skills-read');
+  const project = join(dir, 'project');
+  const skillDirectory = join(project, '.agents', 'skills', 'release-check');
+  mkdirSync(skillDirectory, { recursive: true });
+  const source =
+    '---\nname: release-check\ndescription: Validate a release before publishing.\n---\n\n# Release Check\n\nFull activation body.\n';
+  writeFileSync(join(skillDirectory, 'SKILL.md'), source);
+
+  try {
+    const daemon = await startDaemon({ databasePath, socketPath });
+    try {
+      const client = createLocalRpcClient({ socketPath });
+      const workspace = parseWorkspaceRecord(
+        await client.call({
+          requestId: 'req_skills_read_workspace',
+          method: 'workspace.open',
+          params: { path: project },
+        }),
+      );
+      const result = await client.call({
+        requestId: 'req_skills_read',
+        method: 'skills.read',
+        params: { workspaceId: workspace.workspaceId, skillId: 'project:release-check' },
+      });
+      assert.equal(
+        typeof result === 'object' && result !== null && 'content' in result
+          ? result.content
+          : undefined,
+        source,
+      );
+      assert.equal(
+        typeof result === 'object' && result !== null && 'sha256' in result
+          ? result.sha256
+          : undefined,
+        sha256(source),
+      );
+    } finally {
+      await daemon.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('file.write RPC commits atomically and returns a structured stale-hash conflict', async () => {
   const dir = testTempDir('benchhand-daemon-file-write-test-');
   const databasePath = join(dir, 'state.sqlite');

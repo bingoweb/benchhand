@@ -132,6 +132,7 @@ function requestOverIpc<Result extends JsonValue>(
         method: 'POST',
         path: '/rpc',
         socketPath,
+        agent: false,
         signal: controller.signal,
         headers: {
           accept: 'application/json',
@@ -223,7 +224,7 @@ function requestOverIpc<Result extends JsonValue>(
         settleReject(
           new RpcCallError({
             code: 'CORE_UNAVAILABLE',
-            message: 'UDM core daemon is unavailable',
+            message: 'Benchhand core daemon is unavailable',
             retryable: true,
           }),
         );

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,7 +22,7 @@ async function createFixture(): Promise<Fixture> {
   const dir = mkdtempSync(join(tmpdir(), 'benchhand-mcp-edge-test-'));
   const daemon = await startDaemon({
     databasePath: join(dir, 'state.sqlite'),
-    socketPath: join(dir, 'daemon.sock'),
+    socketPath: testIpcPath(dir, 'daemon'),
   });
   const edge = await startMcpEdge({
     daemonSocketPath: daemon.socketPath,
@@ -30,6 +30,13 @@ async function createFixture(): Promise<Fixture> {
     port: 0,
   });
   return { dir, daemon, edge };
+}
+
+function testIpcPath(dir: string, name: string): string {
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\benchhand-edge-${name}-${process.pid}-${randomUUID()}`;
+  }
+  return join(dir, `${name}.sock`);
 }
 
 async function closeFixture(fixture: Fixture): Promise<void> {
@@ -64,6 +71,7 @@ function createGitRepository(root: string): string {
   git(repo, ['init', '-q', '-b', 'main']);
   git(repo, ['config', 'user.name', 'Benchhand Test']);
   git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
+  git(repo, ['config', 'core.autocrlf', 'false']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);

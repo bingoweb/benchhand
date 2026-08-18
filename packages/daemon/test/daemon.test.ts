@@ -41,6 +41,7 @@ function createGitRepository(root: string): string {
   git(repo, ['init', '-q', '-b', 'main']);
   git(repo, ['config', 'user.name', 'Benchhand Test']);
   git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
+  git(repo, ['config', 'core.autocrlf', 'false']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);
@@ -49,6 +50,10 @@ function createGitRepository(root: string): string {
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function nativeFileDurability(): 'file-and-directory' | 'file-only' {
+  return process.platform === 'win32' ? 'file-only' : 'file-and-directory';
 }
 
 function rawRpc(socketPath: string, payload: unknown): Promise<unknown> {
@@ -532,7 +537,7 @@ test('file.write RPC commits atomically and returns a structured stale-hash conf
         previousSha256: sha256('before\n'),
         sha256: sha256('after\n'),
         bytesWritten: 6,
-        durability: 'file-and-directory',
+        durability: nativeFileDurability(),
       });
       assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), 'after\n');
 
@@ -631,7 +636,7 @@ test('file.patch RPC applies exact edits and preserves structured conflict evide
         sha256: sha256(after),
         editsApplied: 2,
         bytesWritten: Buffer.byteLength(after),
-        durability: 'file-and-directory',
+        durability: nativeFileDurability(),
       });
       assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);
     } finally {

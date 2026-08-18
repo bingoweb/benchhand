@@ -281,7 +281,7 @@ function buildMcpServer(daemonClient: ReturnType<typeof createLocalRpcClient>): 
     'health',
     {
       title: 'Benchhand Health',
-      description: 'Verify that the MCP edge can reach the durable UDM core daemon.',
+      description: 'Verify that the MCP edge can reach the durable Benchhand core daemon.',
       inputSchema: z.object({}),
       outputSchema: healthToolOutputSchema,
       annotations: readOnlyAnnotations(),

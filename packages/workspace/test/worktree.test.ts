@@ -36,6 +36,7 @@ function createRepository(root: string): string {
   git(repo, ['init', '-q', '-b', 'main']);
   git(repo, ['config', 'user.name', 'Benchhand Test']);
   git(repo, ['config', 'user.email', 'benchhand-test@example.invalid']);
+  git(repo, ['config', 'core.autocrlf', 'false']);
   writeFileSync(join(repo, 'tracked.txt'), 'committed\n');
   git(repo, ['add', 'tracked.txt']);
   git(repo, ['commit', '-q', '-m', 'initial']);

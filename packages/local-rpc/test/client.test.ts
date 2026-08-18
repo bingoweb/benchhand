@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,14 @@ import { createLocalRpcClient, RpcCallError } from '../src/index.js';
 
 function unavailableSocketPath(): { dir: string; socketPath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'benchhand-rpc-client-test-'));
-  return { dir, socketPath: join(dir, 'missing.sock') };
+  return { dir, socketPath: testIpcPath(dir, 'missing') };
+}
+
+function testIpcPath(dir: string, name: string): string {
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\benchhand-rpc-${name}-${process.pid}-${randomUUID()}`;
+  }
+  return join(dir, `${name}.sock`);
 }
 
 async function startDelayedRpcServer(socketPath: string, delayMs: number): Promise<http.Server> {
@@ -45,8 +53,8 @@ async function startDelayedRpcServer(socketPath: string, delayMs: number): Promi
   return server;
 }
 
-async function closeServer(server: http.Server): Promise<void> {
-  if (!server.listening) return;
+async function closeServer(server: http.Server | undefined): Promise<void> {
+  if (server === undefined || !server.listening) return;
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error === undefined ? resolve() : reject(error)));
   });
@@ -158,6 +166,42 @@ test('aborts an in-flight RPC when the caller cancels it', async () => {
     );
   } finally {
     await closeServer(server);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the same client reconnects after the IPC server is replaced at the same endpoint', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'benchhand-rpc-restart-test-'));
+  const socketPath = testIpcPath(dir, 'restart');
+  const client = createLocalRpcClient({ socketPath });
+  let first: http.Server | undefined;
+  let second: http.Server | undefined;
+
+  try {
+    first = await startDelayedRpcServer(socketPath, 0);
+    assert.deepEqual(
+      await client.call({
+        requestId: 'req_before_server_restart',
+        method: 'fixture.echo',
+        params: {},
+      }),
+      { delayed: true },
+    );
+    await closeServer(first);
+    first = undefined;
+
+    second = await startDelayedRpcServer(socketPath, 0);
+    assert.deepEqual(
+      await client.call({
+        requestId: 'req_after_server_restart',
+        method: 'fixture.echo',
+        params: {},
+      }),
+      { delayed: true },
+    );
+  } finally {
+    await closeServer(second).catch(() => {});
+    await closeServer(first).catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   }
 });

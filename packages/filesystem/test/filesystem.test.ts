@@ -67,6 +67,10 @@ function sha256(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function nativeFileDurability(): 'file-and-directory' | 'file-only' {
+  return process.platform === 'win32' ? 'file-only' : 'file-and-directory';
+}
+
 test('reads a bounded byte range without loading or returning bytes beyond the request', async () => {
   const dir = tempDir('benchhand-filesystem-read-');
   writeFileSync(join(dir, 'hello.txt'), 'hello\nworld\n');
@@ -275,7 +279,7 @@ test('fails closed for unknown or unavailable durable workspaces before filesyst
   }
 });
 
-test('atomically replaces a regular file with a matching hash precondition and preserves mode', async () => {
+test('atomically replaces a regular file with a matching hash precondition and preserves POSIX mode where supported', async () => {
   const dir = tempDir('benchhand-filesystem-write-replace-');
   const path = join(dir, 'config.txt');
   writeFileSync(path, 'before\n');
@@ -291,14 +295,16 @@ test('atomically replaces a regular file with a matching hash precondition and p
     });
 
     assert.equal(readFileSync(path, 'utf8'), 'after\n');
-    assert.equal(statSync(path).mode & 0o777, 0o640);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(path).mode & 0o777, 0o640);
+    }
     assert.deepEqual(result, {
       path: 'config.txt',
       created: false,
       previousSha256: sha256('before\n'),
       sha256: sha256('after\n'),
       bytesWritten: 6,
-      durability: 'file-and-directory',
+      durability: nativeFileDurability(),
     });
     assert.deepEqual(
       readdirSync(dir).filter((name) => name.includes('.benchhand-write-')),
@@ -546,7 +552,7 @@ test('patch applies multiple exact non-overlapping edits against one hashed sour
       sha256: sha256(after),
       editsApplied: 2,
       bytesWritten: Buffer.byteLength(after),
-      durability: 'file-and-directory',
+      durability: nativeFileDurability(),
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });

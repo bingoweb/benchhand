@@ -106,7 +106,7 @@ test('resolves CLAUDE.md and AGENTS.md from broad scope to nearest scope determi
   }
 });
 
-test('caches unchanged instruction content and invalidates on same-size change deletion and recreation', async () => {
+test('validates cached instruction bytes and invalidates on same-size change deletion and recreation', async () => {
   const dir = tempDir('benchhand-instructions-cache-');
   const path = join(dir, 'AGENTS.md');
   writeFileSync(path, 'first\n');
@@ -126,22 +126,46 @@ test('caches unchanged instruction content and invalidates on same-size change d
     const second = await service.resolve({ workspaceId });
     assert.equal(first.documents[0]?.content, 'first\n');
     assert.equal(second.documents[0]?.content, 'first\n');
-    assert.equal(reads, 1);
+    assert.equal(reads, 2);
 
     writeFileSync(path, 'other\n');
     const changed = await service.resolve({ workspaceId });
     assert.equal(changed.documents[0]?.content, 'other\n');
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
 
     unlinkSync(path);
     const deleted = await service.resolve({ workspaceId });
     assert.deepEqual(deleted.documents, []);
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
 
     writeFileSync(path, 'again\n');
     const recreated = await service.resolve({ workspaceId });
     assert.equal(recreated.documents[0]?.content, 'again\n');
-    assert.equal(reads, 3);
+    assert.equal(reads, 4);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('does not trust unchanged filesystem metadata when instruction bytes change', async () => {
+  const dir = tempDir('benchhand-instructions-coarse-metadata-');
+  const path = join(dir, 'AGENTS.md');
+  writeFileSync(path, 'first\n');
+  const snapshots = [Buffer.from('first\n'), Buffer.from('other\n')];
+  let reads = 0;
+
+  try {
+    const workspace = await workspaceRecord(dir);
+    const service = new InstructionsService({
+      resolveWorkspace: async () => workspace,
+      readFile: async () => snapshots[Math.min(reads++, snapshots.length - 1)] ?? Buffer.alloc(0),
+    });
+
+    const first = await service.resolve({ workspaceId });
+    const changedWithoutMetadataSignal = await service.resolve({ workspaceId });
+    assert.equal(first.documents[0]?.content, 'first\n');
+    assert.equal(changedWithoutMetadataSignal.documents[0]?.content, 'other\n');
+    assert.equal(reads, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

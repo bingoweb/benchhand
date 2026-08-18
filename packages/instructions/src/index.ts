@@ -392,13 +392,6 @@ export class InstructionsService {
     }
 
     const cached = this.#fileCache.get(candidate);
-    if (
-      cached !== undefined &&
-      cached.realPath === metadata.realPath &&
-      cached.fingerprint === metadata.fingerprint
-    ) {
-      return cached;
-    }
 
     for (let attempt = 0; attempt < MAX_STABLE_READ_ATTEMPTS; attempt += 1) {
       if (metadata.size > MAX_INSTRUCTION_BYTES) {
@@ -422,7 +415,6 @@ export class InstructionsService {
           `instruction file exceeds ${MAX_INSTRUCTION_BYTES} bytes: ${filename}`,
         );
       }
-      const content = decodeInstructionText(buffer, filename);
       const after = await instructionFileMetadata(context.workspaceRoot, candidate, filename).catch(
         (error) => {
           throw mapReadError(filename, error);
@@ -434,11 +426,14 @@ export class InstructionsService {
         after.fingerprint === metadata.fingerprint &&
         after.size === buffer.byteLength
       ) {
+        const sha256 = createHash('sha256').update(buffer).digest('hex');
+        const content =
+          cached?.sha256 === sha256 ? cached.content : decodeInstructionText(buffer, filename);
         const stable: CachedInstructionFile = {
           realPath: metadata.realPath,
           fingerprint: metadata.fingerprint,
           content,
-          sha256: createHash('sha256').update(buffer).digest('hex'),
+          sha256,
         };
         this.#fileCache.set(candidate, stable);
         return stable;

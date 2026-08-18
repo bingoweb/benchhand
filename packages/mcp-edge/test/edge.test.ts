@@ -82,6 +82,10 @@ function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function nativeFileDurability(): 'file-and-directory' | 'file-only' {
+  return process.platform === 'win32' ? 'file-only' : 'file-and-directory';
+}
+
 test('pinned 2026 client discovers the modern era and calls the real daemon health tool', async () => {
   const fixture = await createFixture();
   const client = await connectClient(fixture.edge.url, 'modern');
@@ -495,7 +499,7 @@ test('file_patch exposes deterministic exact edits and structured conflict evide
         sha256: sha256(after),
         editsApplied: 2,
         bytesWritten: Buffer.byteLength(after),
-        durability: 'file-and-directory',
+        durability: nativeFileDurability(),
       },
     });
     assert.equal(readFileSync(join(project, 'config.txt'), 'utf8'), after);

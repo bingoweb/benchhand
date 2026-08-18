@@ -22,6 +22,9 @@ import {
   resolveGitCommit,
 } from './git-worktree.js';
 
+const WORKTREE_INFLIGHT_RECONCILE_ATTEMPTS = 40;
+const WORKTREE_INFLIGHT_RECONCILE_DELAY_MS = 25;
+
 const WORKSPACE_REGISTRY_MIGRATION = {
   id: '0002-workspace-registry',
   sql: `
@@ -455,6 +458,14 @@ export class WorkspaceRegistry {
     }
     if (existingBranchCommit !== null) {
       if (this.#hasWorktreeJournalAction(ownershipKey, 'create-intent')) {
+        const canStillBeInFlight =
+          existingBranchCommit === baseCommit &&
+          !this.#hasWorktreeJournalAction(ownershipKey, 'create-failed') &&
+          !this.#hasWorktreeJournalAction(ownershipKey, 'cleanup-intent');
+        if (canStillBeInFlight) {
+          const reconciled = await this.#waitForInflightWorktree(registration);
+          if (reconciled !== undefined) return reconciled;
+        }
         if (!this.#hasWorktreeJournalAction(ownershipKey, 'cleanup-intent')) {
           this.#appendWorktreeJournal(ownershipKey, null, 'cleanup-intent', {
             reason: 'orphaned-managed-branch',
@@ -504,6 +515,27 @@ export class WorkspaceRegistry {
     }
 
     return this.#registerManagedWorktree(registration, 'created');
+  }
+
+  async #waitForInflightWorktree(
+    registration: ManagedWorktreeRegistration,
+  ): Promise<WorkspaceRecord | undefined> {
+    for (let attempt = 0; attempt < WORKTREE_INFLIGHT_RECONCILE_ATTEMPTS; attempt += 1) {
+      const reconciled = await this.#tryReconcilePartialWorktree(registration);
+      if (reconciled !== undefined) return reconciled;
+
+      if (
+        this.#hasWorktreeJournalAction(registration.ownershipKey, 'create-failed') ||
+        this.#hasWorktreeJournalAction(registration.ownershipKey, 'cleanup-intent')
+      ) {
+        return undefined;
+      }
+
+      if (attempt + 1 < WORKTREE_INFLIGHT_RECONCILE_ATTEMPTS) {
+        await delay(WORKTREE_INFLIGHT_RECONCILE_DELAY_MS);
+      }
+    }
+    return this.#tryReconcilePartialWorktree(registration);
   }
 
   async #tryReconcilePartialWorktree(
@@ -873,6 +905,10 @@ function isSameOrDescendantPath(parent: string, candidate: string): boolean {
       !pathFromParent.startsWith(`..${sep}`) &&
       !isAbsolute(pathFromParent))
   );
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 function worktreeOwnershipKey(sourceFilesystemIdentity: string, baseCommit: string): string {

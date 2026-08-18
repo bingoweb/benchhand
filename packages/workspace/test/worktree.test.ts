@@ -281,6 +281,90 @@ test('reconciles a Benchhand-owned worktree created before durable registry fina
   }
 });
 
+test('waits for an in-flight creator to materialize a journaled managed worktree before declaring cleanup', async () => {
+  const dir = tempDir('benchhand-worktree-inflight-create-');
+  const repo = createRepository(dir);
+  const worktreeRoot = join(dir, 'managed');
+  const db = openSqliteDatabase(join(dir, 'state.sqlite'));
+
+  try {
+    const registry = new WorkspaceRegistry(db, { worktreeRoot });
+    const repoRoot = await realpath(repo);
+    const head = git(repo, ['rev-parse', 'HEAD']).trim();
+    const ownershipKey = expectedOwnershipKey(repoRoot, head);
+    const worktreePath = join(worktreeRoot, ownershipKey);
+    const branch = `benchhand/${ownershipKey}`;
+    mkdirSync(worktreeRoot, { recursive: true });
+
+    db.run(
+      `
+        INSERT INTO worktree_cleanup_journal(
+          ownership_key,
+          workspace_id,
+          action,
+          details_json
+        ) VALUES (?, NULL, 'create-intent', ?)
+      `,
+      [
+        ownershipKey,
+        JSON.stringify({
+          repoRoot,
+          requestedBaseRef: 'HEAD',
+          baseCommit: head,
+          branch,
+          worktreePath,
+        }),
+      ],
+    );
+    git(repo, ['branch', branch, head]);
+
+    const materialized = new Promise<void>((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          git(repo, [
+            'worktree',
+            'add',
+            '--lock',
+            '--reason',
+            `benchhand:${ownershipKey}`,
+            worktreePath,
+            branch,
+          ]);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      }, 50);
+    });
+
+    let opened: Awaited<ReturnType<WorkspaceRegistry['open']>> | undefined;
+    let openError: unknown;
+    try {
+      opened = await registry.open(repo, { mode: 'worktree', baseRef: 'HEAD' });
+    } catch (error) {
+      openError = error;
+    }
+    await materialized;
+    if (openError !== undefined) throw openError;
+
+    assert.notEqual(opened, undefined);
+    assert.equal(opened?.canonicalPath, await realpath(worktreePath));
+    assert.equal(opened?.branch, branch);
+    assert.deepEqual(
+      db
+        .all<{ action: string }>(
+          'SELECT action FROM worktree_cleanup_journal WHERE ownership_key = ? ORDER BY event_id',
+          [ownershipKey],
+        )
+        .map((row) => row.action),
+      ['create-intent', 'reconciled'],
+    );
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('marks a missing managed worktree cleanup-required instead of blindly recreating it', async () => {
   const dir = tempDir('benchhand-worktree-missing-managed-');
   const repo = createRepository(dir);

@@ -2,8 +2,9 @@
 
 > **A durable, cross-platform development MCP for people who expect their tools to remember what they were doing.**
 
+[![Quality](https://github.com/bingoweb/benchhand/actions/workflows/quality.yml/badge.svg)](https://github.com/bingoweb/benchhand/actions/workflows/quality.yml)
 ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
-![Node](https://img.shields.io/badge/node-22%2B-339933)
+![Node](https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-339933)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -166,7 +167,9 @@ The rule is:
 
 > The same Benchhand operation should have the same meaning on Windows, macOS, and Linux, or fail explicitly when a platform cannot provide the required guarantee.
 
-Current development evidence is strongest on macOS. Benchhand will not call itself cross-platform-ready merely because TypeScript compiled three times in CI. Platform-native behavior has to be tested on the platform that claims to support it.
+The current foundation is exercised in GitHub Actions on Ubuntu, macOS, and Windows Server 2022 across Node 22, 24, and 26. The matrix runs the real repository quality gate and production dependency audit; it is not a compile-only postcard from CI.
+
+That evidence applies to the foundation that exists today. Future PTY/ConPTY, service lifecycle, packaging, privilege, and installer behavior still has to earn its own platform-native acceptance before Benchhand makes a broader cross-platform release claim.
 
 ---
 
